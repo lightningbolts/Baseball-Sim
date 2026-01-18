@@ -1,0 +1,5 @@
+{
+  "name": "Grand Slam Sim",
+  "description": "A comprehensive MLB baseball season simulator using MLB API data for real-time rosters and advanced statistical analysis, featuring a full play-by-play simulation engine.",
+  "requestFramePermissions": []
+}
