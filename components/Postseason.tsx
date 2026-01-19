@@ -15,20 +15,48 @@ export const Postseason: React.FC<PostseasonProps> = ({ bracket, teams, round })
     const t2 = getTeam(series.team2Id);
     if (!t1 || !t2) return null;
 
+    const isComplete = !!series.winnerId;
+
     return (
-      <div key={series.id} className="bg-slate-800 rounded-lg p-3 border border-slate-700 w-64 mb-4">
+      <div key={series.id} className={`bg-slate-800 rounded-lg p-3 border ${isComplete ? 'border-emerald-500/50' : 'border-slate-700'} w-64 mb-4`}>
          <div className="text-xs text-slate-500 uppercase font-bold mb-2 text-center">{series.round}</div>
          <div className="flex justify-between items-center mb-1">
-            <span className={`font-bold ${series.winnerId === t1.id ? 'text-emerald-400' : 'text-white'}`}>{t1.abbreviation}</span>
-            <span className="text-white bg-slate-700 px-2 rounded">{series.wins1}</span>
+            <div className="flex items-center gap-2">
+              {t1.logoUrl && <img src={t1.logoUrl} alt={t1.abbreviation} className="w-5 h-5 object-contain" />}
+              <span className={`font-bold ${series.winnerId === t1.id ? 'text-emerald-400' : isComplete ? 'text-slate-500' : 'text-white'}`}>{t1.abbreviation}</span>
+            </div>
+            <span className={`${series.winnerId === t1.id ? 'bg-emerald-600' : 'bg-slate-700'} text-white px-2 rounded font-mono`}>{series.wins1}</span>
          </div>
          <div className="flex justify-between items-center">
-            <span className={`font-bold ${series.winnerId === t2.id ? 'text-emerald-400' : 'text-white'}`}>{t2.abbreviation}</span>
-            <span className="text-white bg-slate-700 px-2 rounded">{series.wins2}</span>
+            <div className="flex items-center gap-2">
+              {t2.logoUrl && <img src={t2.logoUrl} alt={t2.abbreviation} className="w-5 h-5 object-contain" />}
+              <span className={`font-bold ${series.winnerId === t2.id ? 'text-emerald-400' : isComplete ? 'text-slate-500' : 'text-white'}`}>{t2.abbreviation}</span>
+            </div>
+            <span className={`${series.winnerId === t2.id ? 'bg-emerald-600' : 'bg-slate-700'} text-white px-2 rounded font-mono`}>{series.wins2}</span>
          </div>
+         {isComplete && (
+            <div className="mt-2 pt-2 border-t border-slate-700 text-center text-xs text-emerald-400 font-semibold">
+              {series.winnerId === t1.id ? t1.name : t2.name} Advances
+            </div>
+         )}
       </div>
     );
   };
+
+  // Show empty placeholders for future rounds
+  const renderPlaceholder = (roundName: string) => (
+    <div className="bg-slate-800/30 rounded-lg p-3 border border-slate-700/30 w-64 mb-4">
+       <div className="text-xs text-slate-600 uppercase font-bold mb-2 text-center">{roundName}</div>
+       <div className="flex justify-between items-center mb-1 text-slate-600">
+          <span>TBD</span>
+          <span className="bg-slate-700/50 px-2 rounded">-</span>
+       </div>
+       <div className="flex justify-between items-center text-slate-600">
+          <span>TBD</span>
+          <span className="bg-slate-700/50 px-2 rounded">-</span>
+       </div>
+    </div>
+  );
 
   const rounds = ['Wild Card', 'DS', 'CS', 'World Series'];
 
@@ -37,12 +65,22 @@ export const Postseason: React.FC<PostseasonProps> = ({ bracket, teams, round })
       <h2 className="text-3xl font-bold text-center mb-8 text-transparent bg-clip-text bg-gradient-to-r from-orange-400 to-red-500 uppercase tracking-widest">
         2025 Postseason: {round}
       </h2>
-      <div className="flex gap-8 justify-center min-w-[1000px]">
-         {rounds.map(r => (
-            <div key={r} className="flex flex-col justify-center space-y-4">
-               {bracket.filter(s => s.round === r).map(renderSeries)}
-            </div>
-         ))}
+      <div className="flex gap-8 justify-center min-w-[1200px]">
+         {rounds.map(r => {
+            const seriesInRound = bracket.filter(s => s.round === r);
+            const expectedCount = r === 'Wild Card' ? 4 : r === 'DS' ? 4 : r === 'CS' ? 2 : 1;
+            
+            return (
+              <div key={r} className="flex flex-col justify-center space-y-4">
+                <h3 className="text-center text-sm font-bold text-slate-400 uppercase tracking-wider mb-2">{r}</h3>
+                {seriesInRound.map(renderSeries)}
+                {/* Show placeholders for empty slots */}
+                {Array.from({ length: Math.max(0, expectedCount - seriesInRound.length) }).map((_, i) => (
+                  <div key={`placeholder-${i}`}>{renderPlaceholder(r)}</div>
+                ))}
+              </div>
+            );
+         })}
       </div>
     </div>
   );

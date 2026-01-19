@@ -10,6 +10,7 @@ interface GameArchiveProps {
 export const GameArchive: React.FC<GameArchiveProps> = ({ schedule, teams }) => {
   const [selectedGame, setSelectedGame] = useState<GameResult | null>(null);
   const [filterTeam, setFilterTeam] = useState<string>('all');
+  const [filterType, setFilterType] = useState<'all' | 'regular' | 'postseason'>('all');
   const [page, setPage] = useState(0);
   const [activeTab, setActiveTab] = useState<'log' | 'box'>('box');
   const [expandedEventIndex, setExpandedEventIndex] = useState<number | null>(null);
@@ -19,9 +20,12 @@ export const GameArchive: React.FC<GameArchiveProps> = ({ schedule, teams }) => 
      .filter(g => g.played)
      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   
-  const filteredGames = filterTeam === 'all' 
-    ? playedGames 
-    : playedGames.filter(g => g.homeTeamId === filterTeam || g.awayTeamId === filterTeam);
+  const filteredGames = playedGames.filter(g => {
+      if (filterTeam !== 'all' && g.homeTeamId !== filterTeam && g.awayTeamId !== filterTeam) return false;
+      if (filterType === 'regular' && g.isPostseason) return false;
+      if (filterType === 'postseason' && !g.isPostseason) return false;
+      return true;
+  });
 
   const paginatedGames = filteredGames.slice(page * ITEMS_PER_PAGE, (page + 1) * ITEMS_PER_PAGE);
 
@@ -95,16 +99,23 @@ export const GameArchive: React.FC<GameArchiveProps> = ({ schedule, teams }) => 
 
   return (
     <div className="bg-slate-900 rounded-xl shadow-xl border border-slate-800 p-6">
-       <div className="flex justify-between items-center mb-6">
+       <div className="flex justify-between items-center mb-4">
           <h2 className="text-2xl font-bold text-white">Game Archive</h2>
-          <select 
-            className="bg-slate-800 border border-slate-700 text-white text-sm rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block p-2.5"
-            value={filterTeam}
-            onChange={(e) => { setFilterTeam(e.target.value); setPage(0); }}
-          >
-             <option value="all">All Teams</option>
-             {teams.map(t => <option key={t.id} value={t.id}>{t.city} {t.name}</option>)}
-          </select>
+          <div className="flex gap-3 items-center">
+             <div className="flex gap-1 bg-slate-800 rounded-lg p-1">
+                <button onClick={() => { setFilterType('all'); setPage(0); }} className={`px-3 py-1 rounded text-xs font-medium transition ${filterType === 'all' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'}`}>All</button>
+                <button onClick={() => { setFilterType('regular'); setPage(0); }} className={`px-3 py-1 rounded text-xs font-medium transition ${filterType === 'regular' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'}`}>Regular</button>
+                <button onClick={() => { setFilterType('postseason'); setPage(0); }} className={`px-3 py-1 rounded text-xs font-medium transition ${filterType === 'postseason' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'}`}>Postseason</button>
+             </div>
+             <select 
+               className="bg-slate-800 border border-slate-700 text-white text-sm rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block p-2.5"
+               value={filterTeam}
+               onChange={(e) => { setFilterTeam(e.target.value); setPage(0); }}
+             >
+                <option value="all">All Teams</option>
+                {teams.map(t => <option key={t.id} value={t.id}>{t.city} {t.name}</option>)}
+             </select>
+          </div>
        </div>
 
        <div className="space-y-2 mb-4">
@@ -127,12 +138,14 @@ export const GameArchive: React.FC<GameArchiveProps> = ({ schedule, teams }) => 
                             <span className="text-slate-400 text-xs">{game.stadium}</span>
                          </div>
                          <div className="flex-1 flex justify-center items-center gap-4">
-                             <div className={`font-bold text-lg ${game.winnerId === away?.id ? 'text-white' : 'text-slate-400'}`}>
+                             <div className={`font-bold text-lg flex items-center gap-2 ${game.winnerId === away?.id ? 'text-white' : 'text-slate-400'}`}>
+                                {away?.logoUrl && <img src={away.logoUrl} alt={away.abbreviation} className="w-6 h-6" />}
                                 {away?.abbreviation} <span className="ml-2 text-2xl">{game.awayScore}</span>
                              </div>
                              <span className="text-slate-600">@</span>
-                             <div className={`font-bold text-lg ${game.winnerId === home?.id ? 'text-white' : 'text-slate-400'}`}>
+                             <div className={`font-bold text-lg flex items-center gap-2 ${game.winnerId === home?.id ? 'text-white' : 'text-slate-400'}`}>
                                 <span className="mr-2 text-2xl">{game.homeScore}</span> {home?.abbreviation}
+                                {home?.logoUrl && <img src={home.logoUrl} alt={home.abbreviation} className="w-6 h-6" />}
                              </div>
                          </div>
                          <div className="w-1/3 text-right">

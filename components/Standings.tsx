@@ -40,9 +40,11 @@ export const Standings: React.FC<StandingsProps> = ({ teams, league }) => {
                      
                      return (
                       <tr key={team.id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
-                        <td className="px-2 py-2 font-medium text-white flex items-center gap-2">
-                            <span className="w-2 h-2 rounded-full" style={{backgroundColor: team.primaryColor}}></span>
+                        <td className="px-2 py-2 font-medium text-white">
+                          <div className="flex items-center gap-2">
+                            {team.logoUrl && <img src={team.logoUrl} alt={team.abbreviation} className="w-6 h-6 object-contain" />}
                             {team.name}
+                          </div>
                         </td>
                         <td className="px-2 py-2 text-center">{team.wins}</td>
                         <td className="px-2 py-2 text-center">{team.losses}</td>

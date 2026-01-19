@@ -2,7 +2,7 @@
 import { Player, Position } from '../../types';
 
 export type StatCategory = 'batting' | 'pitching' | 'defense' | 'statcast_bat' | 'adv_bat';
-export type SortKey = 'pa' | 'avg' | 'hr' | 'rbi' | 'ops' | 'war' | 'd' | 't' | 'gidp' | 'sb' | 'sf' | 'sac' |
+export type SortKey = 'pa' | 'avg' | 'obp' | 'slg' | 'hr' | 'rbi' | 'bb' | 'ibb' | 'ops' | 'war' | 'd' | 't' | 'gidp' | 'sb' | 'cs' | 'sf' | 'sac' |
                'era' | 'wins' | 'so' | 'whip' | 'ip' | 'hbp' | 'wp' | 'pitches' |
                'drs' | 'uzr' | 'oaa' | 'fpct' | 
                'ev' | 'barrel' | 'hardhit' | 'whiff' |
@@ -17,9 +17,19 @@ export const getValue = (p: Player, key: SortKey): number => {
     if (key === 'avg') return p.batting?.avg ?? 0;
     if (key === 'hr') return p.batting?.hr ?? 0;
     if (key === 'rbi') return p.batting?.rbi ?? 0;
+    if (key === 'obp') return p.batting?.obp ?? 0;
+    if (key === 'slg') return p.batting?.slg ?? 0;
+    if (key === 'bb') return s.bb ?? 0;
+    if (key === 'ibb') return s.ibb ?? 0;
     if (key === 'ops') return p.batting?.ops ?? 0;
-    if (key === 'war') return p.batting?.war ?? p.pitching?.war ?? 0;
+    if (key === 'war') return (p.batting?.war || 0) + (p.pitching?.war || 0);
     if (key === 'sb') return p.batting?.sb ?? 0;
+    if (key === 'd') return s.d ?? 0;
+    if (key === 't') return s.t ?? 0;
+    if (key === 'cs') return s.cs ?? 0;
+    if (key === 'sf') return s.sf ?? 0;
+    if (key === 'sac') return s.sac ?? 0;
+    if (key === 'gidp') return s.gidp ?? 0;
     
     // Pitching Standard
     if (key === 'era') return p.pitching?.era ?? 99.99;
@@ -56,8 +66,10 @@ export const getHeaders = (category: StatCategory): { key: SortKey; label: strin
     switch (category) {
         case 'batting':
             return [
-                { key: 'pa', label: 'PA' }, { key: 'avg', label: 'AVG' }, { key: 'hr', label: 'HR' }, { key: 'rbi', label: 'RBI' },
-                { key: 'ops', label: 'OPS' }, { key: 'sb', label: 'SB' }, { key: 'war', label: 'WAR' },
+                { key: 'pa', label: 'PA' }, { key: 'avg', label: 'AVG' }, { key: 'obp', label: 'OBP' }, { key: 'slg', label: 'SLG' },
+                { key: 'hr', label: 'HR' }, { key: 'rbi', label: 'RBI' }, { key: 'bb', label: 'BB' }, { key: 'ibb', label: 'IBB' },
+                { key: 'd', label: '2B' }, { key: 't', label: '3B' }, { key: 'sb', label: 'SB' }, { key: 'cs', label: 'CS' },
+                { key: 'sf', label: 'SF' }, { key: 'sac', label: 'SAC' }, { key: 'ops', label: 'OPS' }, { key: 'war', label: 'WAR' },
             ];
         case 'adv_bat':
             return [

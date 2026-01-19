@@ -7,11 +7,17 @@ interface LeaderboardTableProps {
     players: (Player & { teamAbbr: string })[];
     category: StatCategory;
     sortKey: SortKey;
+    sortAscending: boolean;
     setSortKey: (k: SortKey) => void;
 }
 
-export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({ players, category, sortKey, setSortKey }) => {
+export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({ players, category, sortKey, sortAscending, setSortKey }) => {
     const headers = getHeaders(category);
+  const formatInnings = (outsPitched: number) => {
+    const innings = Math.floor(outsPitched / 3);
+    const remainder = outsPitched % 3;
+    return `${innings}.${remainder}`;
+  };
 
     return (
         <div className="overflow-x-auto custom-scrollbar max-h-[650px] rounded-lg border border-slate-700">
@@ -29,10 +35,10 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({ players, cat
                     >
                       <div className="flex items-center justify-end gap-1">
                           {h.label}
-                          {sortKey === h.key && <span className="text-[10px]">▼</span>}
+                          {sortKey === h.key && <span className="text-[10px]">{sortAscending ? '▲' : '▼'}</span>}
                       </div>
                     </th>
-                  ))}
+                  ))}  
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800 bg-slate-900/50">
@@ -52,13 +58,14 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({ players, cat
                             let displayVal: string | number = numVal;
                             
                             // Formatting Logic
-                            if (['avg', 'ops', 'woba', 'iso', 'babip', 'fpct'].includes(h.key)) displayVal = numVal.toFixed(3).replace('0.', '.');
+                            if (['avg', 'obp', 'slg', 'ops', 'woba', 'iso', 'babip', 'fpct'].includes(h.key)) displayVal = numVal.toFixed(3).replace('0.', '.');
                             else if (['whip'].includes(h.key)) {
                                 displayVal = numVal > 50 ? '-.--' : numVal.toFixed(2);
                             }
                             else if (['era'].includes(h.key)) {
                                 displayVal = numVal > 50 ? '-.--' : numVal.toFixed(2);
                             }
+                            else if (h.key === 'ip') displayVal = formatInnings(player.statsCounters.outsPitched || 0);
                             else if (['ev', 'wrc_plus', 'war', 'drs', 'uzr', 'oaa'].includes(h.key)) displayVal = numVal.toFixed(1);
                             else if (['barrel', 'hardhit', 'whiff', 'bb_pct', 'k_pct'].includes(h.key)) displayVal = (numVal * 100).toFixed(1) + '%';
                             else if (['pitches', 'so', 'wins', 'pa'].includes(h.key)) displayVal = Math.round(numVal);

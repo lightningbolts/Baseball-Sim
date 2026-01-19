@@ -99,10 +99,12 @@ export interface PlayerHistoryEntry {
     ip?: number;
     so?: number;
     bb?: number;
+    ibb?: number;
     whip?: number;
     k9?: number;
     bb9?: number;
     fip?: number;
+    hr9?: number;
     
     avg?: number;
     hr?: number;
@@ -113,6 +115,9 @@ export interface PlayerHistoryEntry {
     sb?: number;
     woba?: number;
     iso?: number;
+    pa?: number;
+    bb_pct?: number;
+    k_pct?: number;
     
     d?: number; 
     t?: number; 
@@ -120,6 +125,15 @@ export interface PlayerHistoryEntry {
     sac?: number; 
     hbp?: number; 
     gidp?: number; 
+
+    // Fielding
+    po?: number;
+    a?: number;
+    e?: number;
+    dp?: number;
+    chances?: number;
+    fpct?: number;
+    rf9?: number;
   }
 }
 
@@ -209,6 +223,12 @@ export interface StatsCounters {
   inn: number; // Innings Played at Position
 }
 
+export interface ParkFactors {
+  run: number; // 100 = neutral
+  hr: number;  // 100 = neutral
+  babip: number; // 100 = neutral
+}
+
 export interface PlayerRatings {
   contact: number;
   power: number;
@@ -280,9 +300,11 @@ export interface Team {
   city: string;
   name: string;
   abbreviation: string;
+  logoUrl?: string;
   stadium: string;
   league: 'AL' | 'NL';
   division: 'East' | 'Central' | 'West';
+  parkFactors: ParkFactors;
   roster: Player[];
   staff: StaffMember[];
   frontOffice: FrontOffice;
@@ -368,13 +390,15 @@ export interface PostseasonSeries {
   wins2: number;
   gamesNeeded: number; 
   winnerId?: string;
+  gamesPlayed?: number; // Track total games played in series
+  homeTeamId?: string; // Track which team has home advantage
 }
 
 export interface SeasonState {
   teams: Team[];
   schedule: GameResult[];
   date: Date;
-  phase: 'Regular Season' | 'Postseason' | 'Offseason';
+  phase: 'Regular Season' | 'Postseason' | 'Complete' | 'Offseason';
   isPlaying: boolean;
   postseason: {
     bracket: PostseasonSeries[];

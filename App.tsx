@@ -9,9 +9,10 @@ import { TeamDetail } from './components/TeamDetail';
 import { Postseason } from './components/Postseason';
 import { Leaderboard } from './components/Leaderboard';
 import { GameArchive } from './components/GameArchive';
+import { FastSim } from './components/FastSim';
 import { generateTeamData } from './services/leagueService';
 
-const START_DATE = new Date('2026-03-26T12:00:00');
+const START_DATE = new Date('2026-03-25T12:00:00');
 
 const App = () => {
   const [season, setSeason] = useState<SeasonState>({
@@ -33,7 +34,7 @@ const App = () => {
     postseason: null
   });
 
-  const [view, setView] = useState<'league' | 'leaderboard' | 'archive'>('league');
+    const [view, setView] = useState<'league' | 'leaderboard' | 'archive' | 'fastsim'>('league');
   const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
   const [simSpeed, setSimSpeed] = useState(500); 
   const [autoInit, setAutoInit] = useState(false);
@@ -41,12 +42,15 @@ const App = () => {
 
   useEffect(() => {
     if (season.schedule.length === 0 && season.phase === 'Regular Season') {
-       // Attempt to load from CSV
+       // Load the actual 2026 schedule from schedule.json (parsed from MLB data)
        const realSchedule = parseScheduleCSV();
        if (realSchedule.length > 0) {
-           setSeason(prev => ({ ...prev, schedule: realSchedule }));
+           // Align season start date to first scheduled game date
+           const firstDate = new Date(realSchedule[0].date);
+           setSeason(prev => ({ ...prev, schedule: realSchedule, date: firstDate }));
        } else {
-           // Fallback if parsing fails or data missing
+           // Should not happen - schedule.json should always be present
+           console.warn("Schedule.json not loaded, falling back to generated schedule");
            const initialSchedule = generateSchedule(season.teams, START_DATE);
            setSeason(prev => ({ ...prev, schedule: initialSchedule }));
        }
@@ -134,8 +138,28 @@ const App = () => {
      const bracket: PostseasonSeries[] = [];
      
      [alSeeds, nlSeeds].forEach(seeds => {
-         bracket.push({ id: `wc_${seeds[2].id}_${seeds[5].id}`, round: 'Wild Card', team1Id: seeds[2].id, team2Id: seeds[5].id, wins1: 0, wins2: 0, gamesNeeded: 2 });
-         bracket.push({ id: `wc_${seeds[3].id}_${seeds[4].id}`, round: 'Wild Card', team1Id: seeds[3].id, team2Id: seeds[4].id, wins1: 0, wins2: 0, gamesNeeded: 2 });
+         bracket.push({ 
+            id: `wc_${seeds[2].id}_${seeds[5].id}`, 
+            round: 'Wild Card', 
+            team1Id: seeds[2].id, 
+            team2Id: seeds[5].id, 
+            wins1: 0, 
+            wins2: 0, 
+            gamesNeeded: 2,
+            gamesPlayed: 0,
+            homeTeamId: seeds[2].id // 3-seed has home advantage
+         });
+         bracket.push({ 
+            id: `wc_${seeds[3].id}_${seeds[4].id}`, 
+            round: 'Wild Card', 
+            team1Id: seeds[3].id, 
+            team2Id: seeds[4].id, 
+            wins1: 0, 
+            wins2: 0, 
+            gamesNeeded: 2,
+            gamesPlayed: 0,
+            homeTeamId: seeds[3].id // 4-seed has home advantage
+         });
      });
 
      setSeason(prev => ({
@@ -150,9 +174,8 @@ const App = () => {
 
   const simulateDay = () => {
     if (season.phase === 'Regular Season') {
-        const todaysGames = season.schedule.filter(g => 
-            !g.played && new Date(g.date) <= season.date
-        );
+      const sameDay = (a: Date, b: Date) => a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth() && a.getUTCDate() === b.getUTCDate();
+      const todaysGames = season.schedule.filter(g => !g.played && sameDay(new Date(g.date), season.date));
 
         const updatedTeams = [...season.teams];
         
@@ -169,17 +192,15 @@ const App = () => {
         const gamesRemaining = season.schedule.filter(g => !g.played).length;
 
         if (todaysGames.length === 0) {
-            const nextDate = new Date(season.date);
-            nextDate.setDate(nextDate.getDate() + 1);
-            
-            // If no games today AND no games left, trigger postseason
-            if (gamesRemaining === 0) {
-                triggerPostseason(season.teams);
-                return;
-            }
-
-            setSeason(prev => ({ ...prev, date: nextDate, teams: updatedTeams }));
+          // Advance to the next scheduled game date if available; otherwise, increment by one day
+          const nextGame = season.schedule.find(g => !g.played && new Date(g.date) > season.date);
+          const nextDate = nextGame ? new Date(nextGame.date) : new Date(season.date.getTime() + 24*60*60*1000);
+          if (gamesRemaining === 0) {
+            triggerPostseason(season.teams);
             return;
+          }
+          setSeason(prev => ({ ...prev, date: nextDate, teams: updatedTeams }));
+          return;
         }
 
         const results: GameResult[] = [];
@@ -213,16 +234,17 @@ const App = () => {
           });
 
           // Handle Rest Decrement for players who appeared
-          const involvedTeams = [home, away];
-          involvedTeams.forEach(t => {
-              t.roster.filter(p => p.position === Position.P).forEach(p => {
-                   // Logic: If name appears in log (pitcher change or starter info), reset rest
-                   const played = result.log.some(l => l.description.includes(p.name));
-                   if (played) {
-                       p.daysRest = 0;
-                   }
+          if (result.boxScore) {
+              const pitcherIds = new Set([
+                 ...result.boxScore.homePitchers.map(p => p.id),
+                 ...result.boxScore.awayPitchers.map(p => p.id)
+              ]);
+              [home, away].forEach(t => {
+                  t.roster.filter(p => pitcherIds.has(p.id)).forEach(p => {
+                      p.daysRest = 0;
+                  });
               });
-          });
+          }
 
           updatedTeams[homeIdx].wins += result.homeScore > result.awayScore ? 1 : 0;
           updatedTeams[homeIdx].losses += result.homeScore < result.awayScore ? 1 : 0;
@@ -271,14 +293,67 @@ const App = () => {
             const currIdx = roundOrder.indexOf(season.postseason.round);
             
             if (currIdx === 3) {
-                setSeason(prev => ({ ...prev, phase: 'Offseason', isPlaying: false }));
-                progressionSystem(season.teams);
+                setSeason(prev => ({ ...prev, phase: 'Complete', isPlaying: false }));
+                alert('World Series Complete! Champion crowned!');
                 return;
             }
 
              const nextRound = roundOrder[currIdx + 1];
+             const newBracket = [...currentBracket];
+             
+             // Create next round matchups
+             if (nextRound === 'DS') {
+                 const alWC = currentBracket.filter(s => s.winnerId && season.teams.find(t => t.id === s.winnerId)?.league === 'AL');
+                 const nlWC = currentBracket.filter(s => s.winnerId && season.teams.find(t => t.id === s.winnerId)?.league === 'NL');
+                 
+                 const alTop = season.teams.filter(t => t.league === 'AL').sort((a,b) => b.wins - a.wins);
+                 const nlTop = season.teams.filter(t => t.league === 'NL').sort((a,b) => b.wins - a.wins);
+                 
+                 if (alWC.length >= 2) {
+                     newBracket.push({ id: `ds_al1`, round: 'DS', team1Id: alTop[0].id, team2Id: alWC[1].winnerId!, wins1: 0, wins2: 0, gamesNeeded: 3, gamesPlayed: 0, homeTeamId: alTop[0].id });
+                     newBracket.push({ id: `ds_al2`, round: 'DS', team1Id: alTop[1].id, team2Id: alWC[0].winnerId!, wins1: 0, wins2: 0, gamesNeeded: 3, gamesPlayed: 0, homeTeamId: alTop[1].id });
+                 }
+                 if (nlWC.length >= 2) {
+                     newBracket.push({ id: `ds_nl1`, round: 'DS', team1Id: nlTop[0].id, team2Id: nlWC[1].winnerId!, wins1: 0, wins2: 0, gamesNeeded: 3, gamesPlayed: 0, homeTeamId: nlTop[0].id });
+                     newBracket.push({ id: `ds_nl2`, round: 'DS', team1Id: nlTop[1].id, team2Id: nlWC[0].winnerId!, wins1: 0, wins2: 0, gamesNeeded: 3, gamesPlayed: 0, homeTeamId: nlTop[1].id });
+                 }
+             } else if (nextRound === 'CS') {
+                 const alDS = currentBracket.filter(s => s.round === 'DS' && s.winnerId && season.teams.find(t => t.id === s.winnerId)?.league === 'AL');
+                 const nlDS = currentBracket.filter(s => s.round === 'DS' && s.winnerId && season.teams.find(t => t.id === s.winnerId)?.league === 'NL');
+                 
+                 if (alDS.length === 2) {
+                    const team1 = season.teams.find(t => t.id === alDS[0].winnerId!);
+                    const team2 = season.teams.find(t => t.id === alDS[1].winnerId!);
+                    const betterTeam = team1 && team2 && team1.wins > team2.wins ? team1.id : alDS[0].winnerId!;
+                    newBracket.push({ id: `cs_al`, round: 'CS', team1Id: alDS[0].winnerId!, team2Id: alDS[1].winnerId!, wins1: 0, wins2: 0, gamesNeeded: 4, gamesPlayed: 0, homeTeamId: betterTeam });
+                 }
+                 if (nlDS.length === 2) {
+                    const team1 = season.teams.find(t => t.id === nlDS[0].winnerId!);
+                    const team2 = season.teams.find(t => t.id === nlDS[1].winnerId!);
+                    const betterTeam = team1 && team2 && team1.wins > team2.wins ? team1.id : nlDS[0].winnerId!;
+                    newBracket.push({ id: `cs_nl`, round: 'CS', team1Id: nlDS[0].winnerId!, team2Id: nlDS[1].winnerId!, wins1: 0, wins2: 0, gamesNeeded: 4, gamesPlayed: 0, homeTeamId: betterTeam });
+                 }
+             } else if (nextRound === 'World Series') {
+                 const alCS = currentBracket.find(s => s.round === 'CS' && s.winnerId && season.teams.find(t => t.id === s.winnerId)?.league === 'AL');
+                 const nlCS = currentBracket.find(s => s.round === 'CS' && s.winnerId && season.teams.find(t => t.id === s.winnerId)?.league === 'NL');
+                 
+                 if (alCS?.winnerId && nlCS?.winnerId) {
+                     const alTeam = season.teams.find(t => t.id === alCS.winnerId);
+                     const nlTeam = season.teams.find(t => t.id === nlCS.winnerId);
+                     const betterTeam = alTeam && nlTeam && alTeam.wins > nlTeam.wins ? alTeam.id : alCS.winnerId;
+                     newBracket.push({ id: `ws`, round: 'World Series', team1Id: alCS.winnerId, team2Id: nlCS.winnerId, wins1: 0, wins2: 0, gamesNeeded: 4, gamesPlayed: 0, homeTeamId: betterTeam });
+                 }
+             }
+             
+             setSeason(prev => ({ 
+                 ...prev, 
+                 isPlaying: false,
+                 postseason: {
+                     bracket: newBracket,
+                     round: nextRound
+                 }
+             }));
              alert(`Round ${season.postseason.round} Complete! Moving to ${nextRound}.`);
-             setSeason(prev => ({ ...prev, isPlaying: false }));
             return;
         }
 
@@ -286,21 +361,104 @@ const App = () => {
         
         updatedTeams.forEach(t => t.roster.forEach(p => { if(p.position===Position.P) p.daysRest = Math.min(5, p.daysRest+1); }));
 
+        const postseasonResults: GameResult[] = [];
+        
         activeSeries.forEach(series => {
-            const home = updatedTeams.find(t => t.id === series.team1Id)!;
-            const away = updatedTeams.find(t => t.id === series.team2Id)!;
+            // Initialize tracking fields
+            if (series.gamesPlayed === undefined) series.gamesPlayed = 0;
+            if (series.homeTeamId === undefined) series.homeTeamId = series.team1Id; // Team 1 has home advantage
+            
+            // Determine home/away based on series format and games played
+            let homeTeamId = series.team1Id;
+            let awayTeamId = series.team2Id;
+            
+            const gp = series.gamesPlayed!;
+            
+            // Wild Card: Best of 3 (2-1 format) - Higher seed hosts games 1&2
+            if (series.round === 'Wild Card') {
+                if (gp === 0 || gp === 1) {
+                    homeTeamId = series.team1Id; // Games 1-2 at higher seed
+                } else {
+                    homeTeamId = series.team2Id; // Game 3 at lower seed (if necessary)
+                }
+            }
+            // Division Series: Best of 5 (2-2-1 format)
+            else if (series.round === 'DS') {
+                if (gp === 0 || gp === 1) {
+                    homeTeamId = series.team1Id; // Games 1-2 at higher seed
+                } else if (gp === 2 || gp === 3) {
+                    homeTeamId = series.team2Id; // Games 3-4 at lower seed
+                } else {
+                    homeTeamId = series.team1Id; // Game 5 at higher seed
+                }
+            }
+            // Championship Series: Best of 7 (2-3-2 format)
+            else if (series.round === 'CS') {
+                if (gp === 0 || gp === 1) {
+                    homeTeamId = series.team1Id; // Games 1-2 at higher seed
+                } else if (gp === 2 || gp === 3 || gp === 4) {
+                    homeTeamId = series.team2Id; // Games 3-4-5 at lower seed
+                } else {
+                    homeTeamId = series.team1Id; // Games 6-7 at higher seed
+                }
+            }
+            // World Series: Best of 7 (2-3-2 format)
+            else if (series.round === 'World Series') {
+                if (gp === 0 || gp === 1) {
+                    homeTeamId = series.team1Id; // Games 1-2 at team with better record
+                } else if (gp === 2 || gp === 3 || gp === 4) {
+                    homeTeamId = series.team2Id; // Games 3-4-5 at other team
+                } else {
+                    homeTeamId = series.team1Id; // Games 6-7 at team with better record
+                }
+            }
+            
+            awayTeamId = homeTeamId === series.team1Id ? series.team2Id : series.team1Id;
+            
+            const home = updatedTeams.find(t => t.id === homeTeamId)!;
+            const away = updatedTeams.find(t => t.id === awayTeamId)!;
             
             const result = simulateGame(home, away, season.date, true);
             
-            [home, away].forEach(t => t.roster.filter(p=>p.position===Position.P).forEach(p => {
-                if (result.log.some(l => l.description.includes(p.name))) p.daysRest = 0;
-            }));
+            // Archive postseason game
+            const archivedGame: GameResult = {
+                id: `postseason-${season.date.toISOString()}-${home.id}-${away.id}-${Math.random()}`,
+                date: season.date.toISOString(),
+                homeTeamId: home.id,
+                awayTeamId: away.id,
+                homeScore: result.homeScore,
+                awayScore: result.awayScore,
+                winnerId: result.homeScore > result.awayScore ? home.id : away.id,
+                played: true,
+                isPostseason: true,
+                innings: result.innings,
+                stadium: home.stadium,
+                boxScore: result.boxScore,
+                log: result.log,
+                lineScore: result.lineScore
+            };
+            postseasonResults.push(archivedGame);
             
-            if (result.homeScore > result.awayScore) series.wins1++;
-            else series.wins2++;
+            if (result.boxScore) {
+                const pitcherIds = new Set([
+                   ...result.boxScore.homePitchers.map(p => p.id),
+                   ...result.boxScore.awayPitchers.map(p => p.id)
+                ]);
+                [home, away].forEach(t => t.roster.filter(p => pitcherIds.has(p.id)).forEach(p => p.daysRest = 0));
+            }
+            
+            series.gamesPlayed = (series.gamesPlayed || 0) + 1;
+            
+            if (result.homeScore > result.awayScore) {
+                if (home.id === series.team1Id) series.wins1++;
+                else series.wins2++;
+            } else {
+                if (away.id === series.team1Id) series.wins1++;
+                else series.wins2++;
+            }
 
-            if (series.wins1 >= series.gamesNeeded) series.winnerId = home.id;
-            else if (series.wins2 >= series.gamesNeeded) series.winnerId = away.id;
+            if (series.wins1 >= series.gamesNeeded) series.winnerId = series.team1Id;
+            else if (series.wins2 >= series.gamesNeeded) series.winnerId = series.team2Id;
         });
 
         const nextDate = new Date(season.date);
@@ -309,6 +467,8 @@ const App = () => {
         setSeason(prev => ({
             ...prev,
             date: nextDate,
+            teams: updatedTeams,
+            schedule: [...prev.schedule, ...postseasonResults],
             postseason: {
                 ...prev.postseason!,
                 bracket: currentBracket
@@ -346,6 +506,7 @@ const App = () => {
                     <button onClick={() => setView('league')} className={`px-3 py-1 text-sm font-bold rounded transition ${view === 'league' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}>League</button>
                     <button onClick={() => setView('leaderboard')} className={`px-3 py-1 text-sm font-bold rounded transition ${view === 'leaderboard' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}>Leaders</button>
                     <button onClick={() => setView('archive')} className={`px-3 py-1 text-sm font-bold rounded transition ${view === 'archive' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}>Archive</button>
+                    <button onClick={() => setView('fastsim')} className={`px-3 py-1 text-sm font-bold rounded transition ${view === 'fastsim' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}>Sim Lab</button>
                 </div>
                <div className="text-lg font-mono text-emerald-400 font-bold border-r border-slate-700 pr-4 pl-4">
                   {formattedDate}
@@ -387,8 +548,8 @@ const App = () => {
                          <input 
                           type="range" 
                           min="100" 
-                          max="2000" 
-                          step="100"
+                          max="5000" 
+                          step="250"
                           className="w-full accent-emerald-500 h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer"
                           value={simSpeed}
                           onChange={(e) => setSimSpeed(Number(e.target.value))}
@@ -423,6 +584,8 @@ const App = () => {
         {/* View Routing */}
         {view === 'leaderboard' ? (
             <Leaderboard teams={season.teams} />
+        ) : view === 'fastsim' ? (
+            <FastSim teams={season.teams} schedule={season.schedule} />
         ) : view === 'archive' ? (
             <GameArchive schedule={season.schedule} teams={season.teams} />
         ) : (
@@ -450,10 +613,13 @@ const App = () => {
                         >
                             <div className="h-2 w-full" style={{ background: `linear-gradient(to right, ${team.primaryColor}, ${team.secondaryColor})` }}></div>
                             <div className="p-4 flex flex-col items-center">
-                                <div className="text-3xl font-black text-white/10 group-hover:text-white/20 absolute top-4 right-4 transition">{team.abbreviation}</div>
-                                <div className="w-12 h-12 rounded-full mb-3 flex items-center justify-center text-xl font-bold text-white shadow-inner" style={{backgroundColor: team.primaryColor}}>
-                                    {team.abbreviation[0]}
-                                </div>
+                                {team.logoUrl ? (
+                                    <img src={team.logoUrl} alt={`${team.city} ${team.name}`} className="w-16 h-16 mb-3 object-contain" />
+                                ) : (
+                                    <div className="w-12 h-12 rounded-full mb-3 flex items-center justify-center text-xl font-bold text-white shadow-inner" style={{backgroundColor: team.primaryColor}}>
+                                        {team.abbreviation[0]}
+                                    </div>
+                                )}
                                 <h3 className="font-bold text-white text-center">{team.city}</h3>
                                 <p className="text-xs text-slate-400">{team.name}</p>
                                 <div className="mt-3 flex gap-2 text-xs font-mono">

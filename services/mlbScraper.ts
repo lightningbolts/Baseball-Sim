@@ -46,6 +46,46 @@ const calcRating = (val: number, min: number, max: number) => {
     return 20 + ((val - min) / (max - min)) * 79;
 };
 
+const computeHistoricalOverall = (history: PlayerHistoryEntry[], mode: 'hitting' | 'pitching'): number => {
+    const filtered = history.filter(h => {
+        const yr = parseInt(h.year, 10) || 0;
+        return yr >= 2022 && yr <= 2025;
+    });
+    const sortedAll = [...history].sort((a, b) => (parseInt(b.year, 10) || 0) - (parseInt(a.year, 10) || 0));
+    const recent = (filtered.length > 0 ? filtered : sortedAll).slice(0, 4);
+    if (recent.length === 0) return 60;
+
+    const weights = recent.map((h, idx) => {
+        const year = parseInt(h.year, 10) || 0;
+        const recency = year >= 2025 ? 1.4 : year >= 2024 ? 1.25 : year >= 2023 ? 1.1 : 1.0;
+        const decay = Math.max(0.15, 0.85 - idx * 0.12);
+        return recency * decay;
+    });
+
+    const weighted = recent.map((h, idx) => ({ h, w: weights[idx] }));
+    const sumW = weights.reduce((a, b) => a + b, 0) || 1;
+
+    if (mode === 'hitting') {
+        const avg = weighted.reduce((sum, x) => sum + (x.h.stats.avg || 0.250) * x.w, 0) / sumW;
+        const ops = weighted.reduce((sum, x) => sum + (x.h.stats.ops || 0.700) * x.w, 0) / sumW;
+        const woba = weighted.reduce((sum, x) => sum + (x.h.stats.woba || 0.310) * x.w, 0) / sumW;
+
+        const avgScore = calcRating(avg, 0.210, 0.310);
+        const opsScore = calcRating(ops, 0.640, 0.920);
+        const wobaScore = calcRating(woba, 0.280, 0.400);
+        return Math.round((avgScore * 0.35) + (opsScore * 0.45) + (wobaScore * 0.20));
+    }
+
+    const era = weighted.reduce((sum, x) => sum + (x.h.stats.era || 4.50) * x.w, 0) / sumW;
+    const fip = weighted.reduce((sum, x) => sum + (x.h.stats.fip || 4.30) * x.w, 0) / sumW;
+    const k9 = weighted.reduce((sum, x) => sum + (x.h.stats.k9 || 8.0) * x.w, 0) / sumW;
+
+    const eraScore = calcRating(5.00 - era, 2.70, 5.10);
+    const fipScore = calcRating(5.00 - fip, 2.70, 5.10);
+    const kScore = calcRating(k9, 5.0, 12.0);
+    return Math.round((eraScore * 0.45) + (fipScore * 0.35) + (kScore * 0.20));
+};
+
 // Helper to estimate FIP from basic stats if not provided
 const estimateFIP = (hr: number, bb: number, hbp: number, k: number, ip: number) => {
     if (ip <= 0) return 4.50;
@@ -113,6 +153,85 @@ const fetchPitchArsenal = async (personId: number): Promise<PitchRepertoireEntry
     }
 };
 
+const buildFallbackArsenal = (velocityRating: number, stuff: number, role: 'starter' | 'reliever'): PitchRepertoireEntry[] => {
+    // Build a realistic mix before re-basing speeds later; usage favors heaters and primary breaker
+    const isPower = velocityRating >= 70 || stuff >= 60;
+    const common: PitchRepertoireEntry[] = [
+        { type: 'Four-Seam Fastball', speed: 95, usage: role === 'reliever' ? 40 : 34 },
+        { type: 'Sinker', speed: 93, usage: 9 },
+        { type: 'Cutter', speed: 92, usage: 7 },
+        { type: 'Slider', speed: 88, usage: role === 'reliever' ? 22 : 18 },
+        { type: 'Changeup', speed: 86, usage: 12 },
+        { type: 'Curveball', speed: 82, usage: 8 },
+        { type: 'Splitter', speed: 85, usage: 6 },
+        { type: 'Sweeper', speed: 84, usage: isPower ? 5 : 3 },
+        { type: 'Knuckle Curve', speed: 80, usage: isPower ? 4 : 3 }
+    ];
+    const total = common.reduce((sum, p) => sum + p.usage, 0);
+    return common.map(p => ({ ...p, usage: Math.round((p.usage / total) * 100) })).sort((a,b) => b.usage - a.usage);
+};
+
+const rebaseArsenalSpeeds = (arsenal: PitchRepertoireEntry[], velocityRating: number, role: 'starter' | 'reliever'): PitchRepertoireEntry[] => {
+    // Map rating -> fastball velocity; relievers often sit a tick higher
+    const baseFastball = Math.min(103, Math.max(88, 87 + (velocityRating * 0.16) + (role === 'reliever' ? 1.5 : 0)));
+    const offset = (type: string) => {
+        const t = type.toLowerCase();
+        if (t.includes('four-seam') || t.includes('fastball')) return 0;
+        if (t.includes('sinker')) return -2;
+        if (t.includes('cutter')) return -3;
+        if (t.includes('two-seam')) return -2;
+        if (t.includes('slider')) return -6;
+        if (t.includes('sweeper')) return -8;
+        if (t.includes('change')) return -8;
+        if (t.includes('split')) return -7;
+        if (t.includes('curve')) return -10;
+        if (t.includes('knuckle')) return -11;
+        return -6;
+    };
+
+    return arsenal.map(p => {
+        const base = baseFastball + offset(p.type);
+        const jitter = (Math.random() * 1.8) - 0.9; // add small variation
+        let speed = Math.max(72, base + jitter);
+
+        // Rare triple-digit bursts for big arms
+        if (p.type.toLowerCase().includes('fast') && velocityRating >= 85 && Math.random() < 0.12) {
+            speed += Math.random() * 2.5;
+        }
+
+        return { ...p, speed: Math.round(speed * 10) / 10 };
+    });
+};
+
+const determineStarterRole = (
+    history: PlayerHistoryEntry[],
+    s25: any,
+    s24: any,
+    assumedRole: 'starter' | 'reliever'
+): { isStarter: boolean; recentStarts: number; recentIp: number } => {
+    const pitchingHistory = history.filter(h => h.stats.ip !== undefined || h.stats.starts !== undefined);
+    const recentPitching = pitchingHistory.slice(0, 3);
+
+    const recentStarts = recentPitching.reduce((sum, h) => sum + (h.stats.starts || 0), 0) || (s25?.gamesStarted || s24?.gamesStarted || 0);
+    const recentIp = recentPitching.reduce((sum, h) => sum + (h.stats.ip || 0), 0) || parseFloat(s25?.inningsPitched || s24?.inningsPitched || '0');
+    const recentGames = recentPitching.reduce((sum, h) => sum + (h.stats.games || 0), 0) || (s25?.gamesPlayed || s24?.gamesPlayed || 0);
+    const recentSaves = s25?.saves || s24?.saves || 0;
+    const ipPerGame = recentGames > 0 ? recentIp / recentGames : 0;
+
+    const careerStarts = pitchingHistory.reduce((sum, h) => sum + (h.stats.starts || 0), 0);
+    const maxStartsInSeason = pitchingHistory.length > 0 ? Math.max(...pitchingHistory.map(h => h.stats.starts || 0)) : 0;
+
+    if (assumedRole === 'starter') return { isStarter: true, recentStarts, recentIp };
+    if (recentStarts >= 10) return { isStarter: true, recentStarts, recentIp };
+    if (recentIp >= 80) return { isStarter: true, recentStarts, recentIp };
+    if (ipPerGame >= 3.2 && recentStarts >= 5) return { isStarter: true, recentStarts, recentIp };
+    if (careerStarts >= 25 || maxStartsInSeason >= 12) return { isStarter: true, recentStarts, recentIp };
+    if (recentSaves >= 10) return { isStarter: false, recentStarts, recentIp };
+    if (ipPerGame < 2.0 && recentStarts <= 3) return { isStarter: false, recentStarts, recentIp };
+
+    return { isStarter: false, recentStarts, recentIp };
+};
+
 export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
     console.group(`[MLB Scraper] Fetching Real-Time Roster for Team ID: ${teamMlbId}`);
     try {
@@ -133,42 +252,89 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
 
         const playerPromises = uniquePlayersList.map(async (p: any) => {
             const personId = p.person.id;
+            const assumedRole: 'starter' | 'reliever' = (p.position?.abbreviation === 'SP') ? 'starter' : 'reliever';
             
-            // Fetch hitting, pitching, AND fielding
-            const statsUrl = `${BASE_URL}/people/${personId}/stats?stats=yearByYear,projected,career&group=hitting,pitching,fielding`;
+            // Fetch hitting, pitching, AND fielding - specify Regular Season only to avoid inflated stats
+            const statsUrl = `${BASE_URL}/people/${personId}/stats?stats=yearByYear&group=hitting,pitching,fielding&gameType=R`;
+            const careerFieldingUrl = `${BASE_URL}/people/${personId}/stats?stats=career&group=fielding&gameType=R`;
             const personUrl = `${BASE_URL}/people/${personId}`;
 
             try {
-                const [statsRes, personRes, arsenalRaw] = await Promise.all([
+                const [statsRes, personRes, arsenalRaw, careerFieldingRes] = await Promise.all([
                     fetch(statsUrl),
                     fetch(personUrl),
-                    fetchPitchArsenal(personId)
+                    fetchPitchArsenal(personId),
+                    fetch(careerFieldingUrl)
                 ]);
 
                 const statsData = await statsRes.json();
                 const personData = await personRes.json();
+                const careerFieldingData = await careerFieldingRes.json();
                 const person = personData.people[0];
                 
                 if (!person) return null;
 
-                // --- PITCH REPERTOIRE FALLBACK ---
+                // --- PITCH REPERTOIRE FALLBACK: build a diverse arsenal ---
                 let arsenal = arsenalRaw;
                 if (arsenal.length === 0) {
-                    // Fallback for players where API returns nothing (common for rookies/relievers in some endpoints)
-                    const baseVelo = 90 + Math.random() * 8;
-                    arsenal = [
-                        { type: 'Four-Seam Fastball', speed: baseVelo, usage: 50 },
-                        { type: 'Slider', speed: baseVelo - 8, usage: 30 },
-                        { type: 'Changeup', speed: baseVelo - 9, usage: 20 }
-                    ];
+                    const role = (p.position?.abbreviation === 'SP') ? 'starter' : 'reliever';
+                    const fallback = buildFallbackArsenal(50, 50, role);
+                    arsenal = fallback;
                 }
 
                 const allStats = statsData.stats || [];
-                const history: PlayerHistoryEntry[] = [];
-                let careerFielding: any = { po: 0, a: 0, e: 0, chances: 0 };
+                const historyMap = new Map<string, PlayerHistoryEntry>();
+
+                const upsertHistory = (entry: PlayerHistoryEntry, groupName: string, weight: number) => {
+                    const key = `${entry.year}`;
+                    const existing = historyMap.get(key);
+                    if (!existing) {
+                        historyMap.set(key, entry);
+                        return;
+                    }
+
+                    const existingStats = existing.stats as PlayerHistoryEntry['stats'];
+                    const entryStats = entry.stats as PlayerHistoryEntry['stats'];
+
+                    if (groupName === 'hitting') {
+                        const existingWeight = (existingStats.pa || existingStats.games || 0);
+                        if (weight >= existingWeight) {
+                            existing.stats = { games: existingStats.games || entryStats.games || 0, ...existingStats, ...entryStats };
+                        }
+                    } else if (groupName === 'pitching') {
+                        const existingWeight = (existingStats.ip || existingStats.games || 0);
+                        if (weight >= existingWeight) {
+                            existing.stats = { games: existingStats.games || entryStats.games || 0, ...existingStats, ...entryStats };
+                        }
+                    } else if (groupName === 'fielding') {
+                        const existingWeight = (existingStats.chances || existingStats.games || 0);
+                        if (weight >= existingWeight) {
+                            existing.stats = { games: existingStats.games || entryStats.games || 0, ...existingStats, ...entryStats };
+                        }
+                    } else {
+                        existing.stats = { games: existingStats.games || entryStats.games || 0, ...existingStats, ...entryStats };
+                    }
+                };
                 
-                let s26: any = null;
+                // Parse career fielding from separate request
+                let careerFielding: any = { po: 0, a: 0, e: 0, dp: 0, rf9: 0, chances: 0, fpct: 0 };
+                const careerFieldingStats = careerFieldingData.stats || [];
+                if (careerFieldingStats.length > 0 && careerFieldingStats[0].splits && careerFieldingStats[0].splits.length > 0) {
+                    const stat = careerFieldingStats[0].splits[0].stat;
+                    const chances = stat.chances || (stat.putOuts || 0) + (stat.assists || 0) + (stat.errors || 0) || 1;
+                    careerFielding = {
+                        po: stat.putOuts || 0,
+                        a: stat.assists || 0,
+                        e: stat.errors || 0,
+                        dp: stat.doublePlays || 0,
+                        rf9: parseFloat(stat.rangeFactorPer9Inn || stat.rangeFactorPer9 || 0),
+                        chances: chances,
+                        fpct: parseFloat(stat.fielding) || (((stat.putOuts || 0) + (stat.assists || 0)) / chances)
+                    };
+                }
+                
                 let s25: any = null;
+                let s24: any = null;
                 let isTwoWay = false;
                 
                 // Detection for Ohtani or similar two-way usage
@@ -178,39 +344,26 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                 let hasHittingRecent = false;
 
                 allStats.forEach((group: any) => {
-                    const isProjected = group.type.displayName.toLowerCase().includes('projected');
                     const isYearByYear = group.type.displayName === 'yearByYear';
-                    const isCareer = group.type.displayName === 'career';
                     const groupName = group.group.displayName;
 
-                    if (isCareer && groupName === 'fielding') {
-                        if (group.splits && group.splits.length > 0) {
-                             const stat = group.splits[0].stat;
-                             careerFielding = {
-                                 po: stat.putOuts || 0,
-                                 a: stat.assists || 0,
-                                 e: stat.errors || 0,
-                                 chances: stat.chances || 1
-                             };
-                        }
-                    }
+                    if (isYearByYear) {
+                         const sortedSplits = [...(group.splits || [])].sort((a: any, b: any) => (parseInt(b.season, 10) || 0) - (parseInt(a.season, 10) || 0));
 
-                    if (isYearByYear || isProjected) {
-                         group.splits.forEach((split: any) => {
-                              if (groupName === 'fielding') return; 
-                              
-                              if (recentYears.includes(split.season) || isProjected) {
+                        sortedSplits.forEach((split: any) => {
+
+                              const season = split.season;
+                              if (recentYears.includes(season)) {
                                   if (groupName === 'pitching' && split.stat.inningsPitched > 5) hasPitchingRecent = true;
                                   if (groupName === 'hitting' && split.stat.atBats > 50) hasHittingRecent = true;
                               }
 
                               const stat = split.stat;
-                              let yearLabel = split.season;
-                              if (isProjected || split.season === '2026') {
-                                  yearLabel = '2026 Proj';
-                                  s26 = stat; 
-                              } else if (split.season === '2025') {
+                              let yearLabel = season;
+                              if (season === '2025' && (stat.atBats > 0 || stat.inningsPitched > 0)) {
                                   s25 = stat;
+                              } else if (season === '2024' && (stat.atBats > 0 || stat.inningsPitched > 0)) {
+                                  s24 = stat;
                               }
 
                               const entry: PlayerHistoryEntry = {
@@ -225,6 +378,13 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                                   const bb = stat.baseOnBalls || 0;
                                   const hits = stat.hits || 0;
                                   const hr = stat.homeRuns || 0;
+                                  const games = stat.gamesPlayed || stat.gamesStarted || 0;
+                                  if (ip <= 0.2 || games <= 0) return;
+                                  
+                                  // Log to help debug inflated stats
+                                  if (season === '2025' && ip > 250) {
+                                      console.warn(`[${person.fullName}] High 2025 IP: ${ip} in ${games} games (GS: ${stat.gamesStarted || 0})`);
+                                  }
 
                                   entry.stats = {
                                       ...entry.stats,
@@ -236,14 +396,18 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                                       ip: ip,
                                       so: k,
                                       bb: bb,
+                                      ibb: stat.intentionalWalks || 0,
                                       whip: parseFloat(stat.whip) || ((bb + hits) / ip),
                                       k9: (k / ip) * 9,
                                       bb9: (bb / ip) * 9,
-                                      fip: estimateFIP(hr, bb, stat.hitByPitch || 0, k, ip)
+                                      fip: estimateFIP(hr, bb, stat.hitByPitch || 0, k, ip),
+                                      hr9: (hr / ip) * 9
                                   };
+                                  upsertHistory(entry, 'pitching', ip);
                               } else if (groupName === 'hitting') {
                                   // Advanced Stats Calc
                                   const bb = stat.baseOnBalls || 0;
+                                  const ibb = stat.intentionalWalks || 0;
                                   const hbp = stat.hitByPitch || 0;
                                   const h = stat.hits || 0;
                                   const d = stat.doubles || 0;
@@ -251,8 +415,12 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                                   const hr = stat.homeRuns || 0;
                                   const sf = stat.sacFlies || 0;
                                   const ab = stat.atBats || 1;
+                                  const so = stat.strikeOuts || 0;
                                   const slg = parseFloat(stat.slg) || 0;
                                   const avg = parseFloat(stat.avg) || 0;
+                                  const sac = stat.sacBunts || 0;
+                                  const pa = ab + bb + hbp + sf + sac;
+                                  if (pa <= 5 || ab <= 0) return;
                                   
                                   entry.stats = {
                                       ...entry.stats,
@@ -267,25 +435,46 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                                       // Granular stats
                                       d: d,
                                       t: t,
-                                      sac: stat.sacBunts || 0,
+                                      sac: sac,
                                       sf: sf,
                                       hbp: hbp,
                                       gidp: stat.groundIntoDoublePlay || 0,
+                                      bb: bb,
+                                      ibb: ibb,
+                                      so: so,
+                                      pa: pa,
                                       
                                       // Advanced
                                       iso: slg - avg,
-                                      woba: calculateWOBA(bb, hbp, h, d, t, hr, sf, ab)
+                                      woba: calculateWOBA(bb - ibb, hbp, h, d, t, hr, sf, ab),
+                                      bb_pct: pa > 0 ? (bb - ibb) / pa : 0,
+                                      k_pct: pa > 0 ? so / pa : 0
                                   };
+                                  upsertHistory(entry, 'hitting', pa);
+                              } else if (groupName === 'fielding') {
+                                  const chances = stat.chances || (stat.putOuts || 0) + (stat.assists || 0) + (stat.errors || 0);
+                                  if (chances <= 0) return;
+                                  entry.stats = {
+                                      ...entry.stats,
+                                      po: stat.putOuts || 0,
+                                      a: stat.assists || 0,
+                                      e: stat.errors || 0,
+                                      dp: stat.doublePlays || 0,
+                                      chances: chances,
+                                      fpct: parseFloat(stat.fielding) || (chances > 0 ? ((stat.putOuts || 0) + (stat.assists || 0)) / chances : 0),
+                                      rf9: parseFloat(stat.rangeFactorPer9Inn || stat.rangeFactorPer9 || 0)
+                                  };
+                                  upsertHistory(entry, 'fielding', chances);
                               }
-                              history.push(entry);
                          });
                     }
                 });
                 
                 if (hasPitchingRecent && hasHittingRecent) isTwoWay = true;
 
-                history.sort((a,b) => b.year.localeCompare(a.year));
-                const primaryStats = s25 || s26 || history.find(h => h.year === '2024')?.stats;
+                const history = Array.from(historyMap.values());
+                history.sort((a,b) => (parseInt(b.year, 10) || 0) - (parseInt(a.year, 10) || 0));
+                const primaryStats = s25 || history.find(h => h.year === '2024')?.stats || s24 || history[0]?.stats;
                 const position = mapPosition(p.position);
                 const age = person.currentAge || 25;
                 
@@ -296,6 +485,8 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                 let overall = 60;
                 let trait = "";
                 let isStarter = false;
+                let recentStarts = 0;
+                let recentIp = 0;
 
                 // Init ALL stats counters to 0
                 const statsCounters: StatsCounters = { 
@@ -308,20 +499,29 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                 };
 
                 const defensiveStats: DefensiveStats = {
-                    fpct: careerFielding.chances > 0 ? (careerFielding.po + careerFielding.a) / careerFielding.chances : 0.980,
-                    drs: (Math.random() * 10) - 5, // Simulated baseline
-                    uzr: (Math.random() * 8) - 4,
-                    oaa: (Math.random() * 6) - 3,
-                    po: 0, a: 0, e: 0, dp: 0, rf9: 0,
+                    fpct: careerFielding.fpct || (careerFielding.chances > 0 ? (careerFielding.po + careerFielding.a) / careerFielding.chances : 0.980),
+                    drs: 0,
+                    uzr: 0,
+                    oaa: 0,
+                    po: careerFielding.po || 0,
+                    a: careerFielding.a || 0,
+                    e: careerFielding.e || 0,
+                    dp: careerFielding.dp || 0,
+                    rf9: careerFielding.rf9 || 0,
                     chances: careerFielding.chances || 0
                 };
 
                 if (position === Position.P || isTwoWay) {
                     // Logic for Pitching attributes
-                    const pStats = position === Position.P ? primaryStats : (s26 || s25); 
+                    const pStats = position === Position.P ? primaryStats : (s25 || s24); 
                     if (pStats && pStats.inningsPitched) {
                         const ip = parseFloat(pStats.inningsPitched || pStats.ip || '0');
                         const safeIp = ip > 0 ? ip : 1;
+                        
+                        // Log pitcher stats for debugging inflated data
+                        if (ip > 250) {
+                            console.warn(`High IP for ${person.fullName}: ${ip} IP, GS: ${pStats.gamesStarted || 0}`);
+                        }
                         
                         const k = pStats.strikeOuts || pStats.so || 0;
                         const bb = pStats.baseOnBalls || pStats.bb || 0;
@@ -332,26 +532,42 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
 
                         attributes.stuff = calcRating(k9, 5.0, 12.0);
                         attributes.control = calcRating(5.0 - bb9, 1.0, 4.0);
-                        attributes.velocity = calcRating(k9, 6.0, 13.0); 
+                        
+                        // Get ACTUAL velocity from pitch arsenal if available
+                        const arsenalHasFastball = arsenal && arsenal.length > 0;
+                        const fastballVelo = arsenalHasFastball ? arsenal.find((p: PitchRepertoireEntry) => 
+                            p.type.toLowerCase().includes('four-seam') || 
+                            p.type.toLowerCase().includes('fastball') ||
+                            p.type.toLowerCase().includes('sinker')
+                        )?.speed || 0 : 0;
+                        
+                        if (fastballVelo > 85) {
+                            // Use REAL velocity data from MLB API
+                            attributes.velocity = calcRating(fastballVelo, 89, 98);
+                            console.log(`${person.fullName}: Using real fastball velocity ${fastballVelo} mph`);
+                        } else {
+                            // Fallback to K/9 estimation only if no arsenal data
+                            attributes.velocity = calcRating(k9, 6.0, 13.0);
+                        }
+                        
                         attributes.spin = calcRating(k9 + (10-bb9), 12, 20);
 
                         let pOverall = calcRating(5.00 - era, 2.80, 5.20); 
                         if (pOverall < 40) pOverall = 40;
                         if (position === Position.P) overall = pOverall;
 
-                        // Logic to check if real-life starter
-                        const maxStartsInSeason = Math.max(...history.map(h => h.stats.starts || 0));
-                        const recentStarts = s25?.gamesStarted || s26?.gamesStarted || 0;
-                        const recentSaves = s25?.saves || s26?.saves || 0;
-                        const isExplicitSP = p.position.abbreviation === 'SP';
+                        // Logic to check if real-life starter - USE CAREER HISTORY
+                        const roleDecision = determineStarterRole(history, s25, s24, assumedRole);
+                        isStarter = roleDecision.isStarter;
+                        recentStarts = roleDecision.recentStarts;
+                        recentIp = roleDecision.recentIp;
 
-                        if (isExplicitSP || (maxStartsInSeason > 5 || recentStarts > 3) && recentSaves < 5) {
-                            isStarter = true;
-                            attributes.stamina = calcRating(ip, 90, 190);
-                            if (attributes.stamina < 70) attributes.stamina = 75; 
+                        if (isStarter) {
+                            attributes.stamina = calcRating(ip, 80, 180);
+                            if (attributes.stamina < 65) attributes.stamina = 70; 
                         } else {
                             attributes.stamina = calcRating(ip, 20, 70);
-                            if (recentSaves > 5) {
+                            if ((s25?.saves || s24?.saves || 0) > 5) {
                                 trait = "Closer";
                                 attributes.stuff += 5; 
                                 if(position === Position.P) overall += 3;
@@ -369,7 +585,7 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                     // Logic for Batting attributes (Even for pitchers if two way)
                     // We need to find hitting stats specifically
                     // Search history for a hitting entry in 2025/2026
-                    const hStats = history.find(h => (h.year === '2025' || h.year === '2026' || h.year === '2026 Proj') && h.stats.avg !== undefined)?.stats;
+                    const hStats = history.find(h => (h.year === '2025' || h.year === '2024') && h.stats.avg !== undefined)?.stats;
 
                     if (hStats) {
                         const avg = parseFloat(hStats.avg as any) || .250;
@@ -402,19 +618,21 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                     }
                 }
 
-                overall = Math.max(55, Math.min(99, overall));
+                const historicalOverall = computeHistoricalOverall(history, (position === Position.P && !isTwoWay) ? 'pitching' : 'hitting');
+                overall = Math.max(55, Math.min(99, historicalOverall));
                 if (isTwoWay) {
                     trait = "Two-Way Star"; // Override
                     overall = Math.min(99, overall + 5); // Bonus for flexibility
                 }
                 
                 let potential = overall;
-                if (age < 24) potential += (Math.random() * 10) + 5;
-                else if (age < 28) potential += (Math.random() * 5);
-                else if (age > 33) potential -= (Math.random() * 5);
-                potential = Math.min(99, Math.max(45, potential));
 
-                const meta = { isStarter, rating: overall, saves: (s25?.saves || 0) };
+                const meta = { isStarter, rating: overall, saves: (s25?.saves || 0), recentStarts, recentIp };
+
+                // Rebase pitch speeds to emphasize velocity spread and power arms
+                const finalRole: 'starter' | 'reliever' = isStarter ? 'starter' : 'reliever';
+                arsenal = rebaseArsenalSpeeds(arsenal.length ? arsenal : buildFallbackArsenal(attributes.velocity, attributes.stuff, finalRole), attributes.velocity, finalRole);
+                const avgVelo = arsenal.reduce((sum, p) => sum + (p.speed * (p.usage || 0)), 0) / (arsenal.reduce((sum, p) => sum + (p.usage || 0), 1));
 
                 const player: Player = {
                     id: `mlb_${personId}`,
@@ -442,7 +660,7 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                     pitching: { 
                         era:0, whip:0, so:0, bb:0, ip:0, saves:0, holds:0, blownSaves:0, fip:0, war:0, pitchesThrown: 0,
                         xfip: 0, k9: 0, bb9: 0, hr9: 0, csw_pct: 0, siera: 0, babip: 0,
-                        avgVelocity: 0, spinRate: 0, extension: 0
+                        avgVelocity: Math.round(avgVelo * 10) / 10, spinRate: 0, extension: 0
                     },
                     defense: defensiveStats,
                     history: history
@@ -464,9 +682,17 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
         const pitchers = validPlayers.filter(p => p.position === Position.P || (p.isTwoWay && (p as any)._meta.isStarter));
         
         let starters = pitchers.filter(p => (p as any)._meta.isStarter);
-        starters.sort((a,b) => b.rating - a.rating);
+        starters.sort((a,b) => {
+            const aStarts = (a as any)._meta.recentStarts || 0;
+            const bStarts = (b as any)._meta.recentStarts || 0;
+            const aIp = (a as any)._meta.recentIp || 0;
+            const bIp = (b as any)._meta.recentIp || 0;
+            if (aStarts !== bStarts) return bStarts - aStarts;
+            if (aIp !== bIp) return bIp - aIp;
+            return b.rating - a.rating;
+        });
 
-        // Ensure we have at least 5 starters
+        // Ensure we have at least 5 starters (for gameplay)
         if (starters.length < 5) {
              const relievers = pitchers.filter(p => !(p as any)._meta.isStarter).sort((a,b) => b.rating - a.rating);
              const needed = 5 - starters.length;
@@ -477,14 +703,8 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                      starters.push(relievers[i]);
                  }
              }
-        } 
-        
-        // Cap starters at 6 to ensure bullpen population
-        if (starters.length > 6) {
-             const excess = starters.slice(6);
-             starters = starters.slice(0, 6);
-             excess.forEach(p => (p as any)._meta.isStarter = false);
         }
+        // Note: No cap on starters - teams can have their natural rotation size based on historical usage
 
         starters.forEach((p, i) => {
             p.rotationSlot = i + 1; 

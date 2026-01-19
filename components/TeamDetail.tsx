@@ -13,7 +13,8 @@ interface TeamDetailProps {
 export const TeamDetail: React.FC<TeamDetailProps> = ({ team, onUpdateTeam, onClose }) => {
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'roster' | 'advanced' | 'history' | 'staff' | 'injuries'>('roster');
-  const [scoutingReport, setScoutingReport] = useState<{playerId: string, report: string} | null>(null);
+  const [scoutingReport, setScoutingReport] = useState<{playerId: string, player: Player, report: string} | null>(null);
+    const [historyPlayerId, setHistoryPlayerId] = useState<string | null>(null);
 
   const handleGenerateData = async () => {
     setLoading(true);
@@ -32,9 +33,9 @@ export const TeamDetail: React.FC<TeamDetailProps> = ({ team, onUpdateTeam, onCl
   };
 
   const handleScoutPlayer = async (player: Player) => {
-      setScoutingReport({ playerId: player.id, report: "Analyzing Statcast Data..." });
+      setScoutingReport({ playerId: player.id, player, report: "Analyzing Statcast Data..." });
       const report = await getAdvancedScoutingReport(player);
-      setScoutingReport({ playerId: player.id, report });
+      setScoutingReport({ playerId: player.id, player, report });
   };
 
   // --- UI Components ---
@@ -93,9 +94,13 @@ export const TeamDetail: React.FC<TeamDetailProps> = ({ team, onUpdateTeam, onCl
             <div className="absolute inset-0 opacity-20" style={{ background: `linear-gradient(135deg, ${team.primaryColor}, ${team.secondaryColor})` }}></div>
             <div className="relative p-6 flex justify-between items-end border-b border-slate-700">
                 <div className="flex gap-4 items-center">
-                    <div className="w-20 h-20 rounded-xl shadow-lg flex items-center justify-center text-3xl font-black text-white" style={{backgroundColor: team.primaryColor}}>
-                        {team.abbreviation[0]}
-                    </div>
+                    {team.logoUrl ? (
+                        <img src={team.logoUrl} alt={`${team.city} ${team.name}`} className="w-20 h-20 rounded-xl shadow-lg" />
+                    ) : (
+                        <div className="w-20 h-20 rounded-xl shadow-lg flex items-center justify-center text-3xl font-black text-white" style={{backgroundColor: team.primaryColor}}>
+                            {team.abbreviation[0]}
+                        </div>
+                    )}
                     <div>
                         <h2 className="text-3xl font-bold text-white tracking-tight">{team.city} {team.name}</h2>
                         <div className="flex items-center gap-4 mt-1 text-sm text-slate-300 font-mono">
@@ -147,7 +152,7 @@ export const TeamDetail: React.FC<TeamDetailProps> = ({ team, onUpdateTeam, onCl
                 </div>
                 <div className="text-center">
                     <h3 className="text-xl font-bold text-white mb-2">Season Data Required</h3>
-                    <p className="text-slate-400 max-w-md mx-auto mb-6">Initialize the roster to fetch real-time 2026 data including projected stats, coaching staff, and financials.</p>
+                    <p className="text-slate-400 max-w-md mx-auto mb-6">Initialize the roster to fetch real-time 2026 data, coaching staff, and financials.</p>
                     <button 
                     onClick={handleGenerateData}
                     disabled={loading}
@@ -179,8 +184,6 @@ export const TeamDetail: React.FC<TeamDetailProps> = ({ team, onUpdateTeam, onCl
                         <table className="w-full text-sm text-left text-slate-300">
                             <TableHeader cols={[
                                 { label: 'Player', width: 'w-1/2' },
-                                { label: 'OVR', align: 'text-right' },
-                                { label: 'POT', align: 'text-right' },
                                 { label: 'Age', align: 'text-right' },
                                 { label: 'WAR', align: 'text-right' },
                                 { label: 'Action', align: 'text-right' }
@@ -188,8 +191,6 @@ export const TeamDetail: React.FC<TeamDetailProps> = ({ team, onUpdateTeam, onCl
                             <tbody>
                                 {team.roster.filter(p => !['P', 'SP', 'RP', 'CL'].includes(p.position) || p.isTwoWay).map(player => (
                                     <PlayerRow key={player.id} player={player}>
-                                        <StatCell value={player.rating} type={player.rating > 80 ? 'good' : 'neutral'} />
-                                        <StatCell value={player.potential} />
                                         <StatCell value={player.age} />
                                         <StatCell value={player.batting?.war?.toFixed(1) || '0.0'} type="highlight" />
                                         <td className="px-3 py-2 text-right">
@@ -208,7 +209,6 @@ export const TeamDetail: React.FC<TeamDetailProps> = ({ team, onUpdateTeam, onCl
                         <table className="w-full text-sm text-left text-slate-300">
                             <TableHeader cols={[
                                 { label: 'Player', width: 'w-1/2' },
-                                { label: 'OVR', align: 'text-right' },
                                 { label: 'Role', align: 'text-right' },
                                 { label: 'Stam', align: 'text-right' },
                                 { label: 'ERA', align: 'text-right' },
@@ -217,7 +217,6 @@ export const TeamDetail: React.FC<TeamDetailProps> = ({ team, onUpdateTeam, onCl
                             <tbody>
                                 {team.roster.filter(p => ['P', 'SP', 'RP', 'CL'].includes(p.position) || p.isTwoWay).sort((a,b) => a.rotationSlot - b.rotationSlot).map(player => (
                                     <PlayerRow key={player.id} player={player}>
-                                        <StatCell value={player.rating} type={player.rating > 80 ? 'good' : 'neutral'} />
                                         <td className="px-3 py-2 text-right font-mono text-xs">{player.rotationSlot <= 5 ? 'SP' : player.rotationSlot === 9 ? 'CL' : 'RP'}</td>
                                         <StatCell value={player.attributes.stamina} />
                                         <StatCell value={player.pitching?.era.toFixed(2) || '0.00'} type="highlight" />
@@ -274,68 +273,134 @@ export const TeamDetail: React.FC<TeamDetailProps> = ({ team, onUpdateTeam, onCl
               )}
 
               {/* === HISTORY TAB === */}
-              {activeTab === 'history' && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 h-full overflow-y-auto custom-scrollbar">
-                      {team.roster.map(p => (
-                          <div key={p.id} className="bg-slate-800/40 border border-slate-700 rounded-lg overflow-hidden flex flex-col max-h-80">
-                              <div className="bg-slate-800/80 px-4 py-2 border-b border-slate-700 flex justify-between items-center">
-                                  <span className="font-bold text-white">{p.name}</span>
-                                  <span className="text-xs font-mono text-slate-500">{p.position}</span>
-                              </div>
-                              <div className="overflow-auto flex-1 custom-scrollbar p-2">
-                                  {p.history && p.history.length > 0 ? (
-                                    <table className="w-full text-xs text-left text-slate-300">
-                                        <thead className="text-slate-500 border-b border-slate-700/50">
-                                            <tr>
-                                                <th className="py-1">Year</th>
-                                                <th className="py-1">Team</th>
-                                                {p.position === 'P' || p.isTwoWay ? (
-                                                    <>
-                                                        <th className="py-1 text-right">ERA</th>
-                                                        <th className="py-1 text-right">IP</th>
-                                                        <th className="py-1 text-right">SO</th>
-                                                    </>
-                                                ) : null}
-                                                {(p.position !== 'P' || p.isTwoWay) && (
-                                                    <>
-                                                        <th className="py-1 text-right">AVG</th>
-                                                        <th className="py-1 text-right">HR</th>
-                                                        <th className="py-1 text-right">OPS</th>
-                                                    </>
-                                                )}
-                                            </tr>
-                                        </thead>
-                                        <tbody className="font-mono">
-                                            {p.history.map((h, idx) => (
-                                                <tr key={idx} className="border-b border-slate-700/30 last:border-0 hover:bg-slate-700/20">
-                                                    <td className="py-1 text-emerald-500">{h.year}</td>
-                                                    <td className="py-1 text-slate-400">{h.team}</td>
-                                                    {p.position === 'P' || p.isTwoWay ? (
-                                                        <>
-                                                            <td className="py-1 text-right text-white">{h.stats.era?.toFixed(2)}</td>
-                                                            <td className="py-1 text-right">{h.stats.ip?.toFixed(1)}</td>
-                                                            <td className="py-1 text-right">{h.stats.so}</td>
-                                                        </>
-                                                    ) : null}
-                                                    {(p.position !== 'P' || p.isTwoWay) && (
-                                                        <>
-                                                            <td className="py-1 text-right text-white">{h.stats.avg?.toFixed(3)}</td>
-                                                            <td className="py-1 text-right text-orange-400">{h.stats.hr}</td>
-                                                            <td className="py-1 text-right">{h.stats.ops?.toFixed(3)}</td>
-                                                        </>
-                                                    )}
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                  ) : (
-                                      <div className="flex h-full items-center justify-center text-xs text-slate-500 italic">No history available</div>
-                                  )}
-                              </div>
-                          </div>
-                      ))}
-                  </div>
-              )}
+                            {activeTab === 'history' && (
+                                <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 h-full">
+                                    {/* Sidebar roster (large screens) */}
+                                    <div className="hidden lg:block bg-slate-800/40 border border-slate-700 rounded-lg overflow-hidden">
+                                        <div className="bg-slate-800/80 px-4 py-2 border-b border-slate-700">
+                                            <span className="font-bold text-white">Roster</span>
+                                        </div>
+                                        <div className="overflow-auto max-h-[70vh] custom-scrollbar">
+                                            <ul>
+                                                {team.roster.map(p => (
+                                                    <li key={p.id}>
+                                                        <button
+                                                            className={`w-full text-left px-3 py-2 border-b border-slate-700/30 hover:bg-slate-700/30 ${historyPlayerId === p.id ? 'bg-slate-700/40 text-white' : 'text-slate-300'}`}
+                                                            onClick={() => setHistoryPlayerId(p.id)}
+                                                        >
+                                                            <div className="flex items-center justify-between">
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className="font-bold">{p.name}</span>
+                                                                    {p.injury.isInjured && (
+                                                                        <span className="text-[10px] px-1.5 py-0.5 bg-red-600/20 text-red-400 border border-red-500/30 rounded font-mono">
+                                                                            {p.injury.severity === '60-Day IL' ? '60-IL' : p.injury.severity === '10-Day IL' ? '10-IL' : 'DTD'} ({p.injury.daysRemaining}d)
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                                <span className="text-xs font-mono text-slate-500">{p.position}</span>
+                                                            </div>
+                                                        </button>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    </div>
+
+                                    {/* History detail */}
+                                    <div className="lg:col-span-3 bg-slate-800/40 border border-slate-700 rounded-lg overflow-hidden flex flex-col">
+                                        <div className="bg-slate-800/80 px-4 py-2 border-b border-slate-700 flex justify-between items-center">
+                                            <span className="font-bold text-white">Career History</span>
+                                            {/* Mobile selector */}
+                                            <div className="lg:hidden">
+                                                <select
+                                                    className="bg-slate-900 text-slate-200 text-xs px-2 py-1 rounded border border-slate-700"
+                                                    value={historyPlayerId ?? team.roster[0]?.id}
+                                                    onChange={e => setHistoryPlayerId(e.target.value)}
+                                                >
+                                                    {team.roster.map(p => (
+                                                        <option key={p.id} value={p.id}>{p.name} ({p.position})</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                        </div>
+                                        <div className="overflow-auto flex-1 custom-scrollbar p-2">
+                                            {(() => {
+                                                const selected = team.roster.find(p => p.id === historyPlayerId) || team.roster[0];
+                                                if (!selected) return <div className="p-4 text-slate-500 italic">No player selected</div>;
+                                                const p = selected;
+                                                return (
+                                                    <div>
+                                                        <div className="flex items-center justify-between mb-3">
+                                                            <div>
+                                                                <div className="text-xl font-bold text-white">{p.name}</div>
+                                                                <div className="text-xs font-mono text-slate-500">{p.position}</div>
+                                                            </div>
+                                                        </div>
+                                                        {p.history && p.history.length > 0 ? (
+                                                            <table className="min-w-full text-xs text-left text-slate-300 whitespace-nowrap">
+                                                                <thead className="text-slate-500 border-b border-slate-700/50">
+                                                                    <tr>
+                                                                        <th className="py-1">Year</th>
+                                                                        <th className="py-1">Team</th>
+                                                                        <th className="py-1 text-right">G</th>
+                                                                        {(p.position === 'P' || p.isTwoWay) && (
+                                                                            <>
+                                                                                <th className="py-1 text-right">W-L</th>
+                                                                                <th className="py-1 text-right">ERA</th>
+                                                                                <th className="py-1 text-right">IP</th>
+                                                                                <th className="py-1 text-right">SO</th>
+                                                                                <th className="py-1 text-right">WHIP</th>
+                                                                            </>
+                                                                        )}
+                                                                        {(p.position !== 'P' || p.isTwoWay) && (
+                                                                            <>
+                                                                                <th className="py-1 text-right">AVG</th>
+                                                                                <th className="py-1 text-right">HR</th>
+                                                                                <th className="py-1 text-right">RBI</th>
+                                                                                <th className="py-1 text-right">SB</th>
+                                                                                <th className="py-1 text-right">OPS</th>
+                                                                            </>
+                                                                        )}
+                                                                    </tr>
+                                                                </thead>
+                                                                <tbody className="font-mono">
+                                                                    {p.history.map((h, idx) => (
+                                                                        <tr key={idx} className="border-b border-slate-700/30 last:border-0 hover:bg-slate-700/20">
+                                                                            <td className="py-1 text-emerald-500">{h.year}</td>
+                                                                            <td className="py-1 text-slate-400 text-xs">{h.team}</td>
+                                                                            <td className="py-1 text-right">{h.stats.games}</td>
+                                                                            {(p.position === 'P' || p.isTwoWay) && (
+                                                                                <>
+                                                                                    <td className="py-1 text-right text-slate-300">{h.stats.wins || 0}-{h.stats.losses || 0}</td>
+                                                                                    <td className="py-1 text-right text-white">{h.stats.era?.toFixed(2) || '-.--'}</td>
+                                                                                    <td className="py-1 text-right">{h.stats.ip?.toFixed(1) || '0.0'}</td>
+                                                                                    <td className="py-1 text-right">{h.stats.so || 0}</td>
+                                                                                    <td className="py-1 text-right">{h.stats.whip?.toFixed(2) || '-.--'}</td>
+                                                                                </>
+                                                                            )}
+                                                                            {(p.position !== 'P' || p.isTwoWay) && (
+                                                                                <>
+                                                                                    <td className="py-1 text-right text-white">{h.stats.avg?.toFixed(3) || '.000'}</td>
+                                                                                    <td className="py-1 text-right text-orange-400">{h.stats.hr || 0}</td>
+                                                                                    <td className="py-1 text-right">{h.stats.rbi || 0}</td>
+                                                                                    <td className="py-1 text-right">{h.stats.sb || 0}</td>
+                                                                                    <td className="py-1 text-right">{h.stats.ops?.toFixed(3) || '.000'}</td>
+                                                                                </>
+                                                                            )}
+                                                                        </tr>
+                                                                    ))}
+                                                                </tbody>
+                                                            </table>
+                                                        ) : (
+                                                            <div className="flex h-full items-center justify-center text-xs text-slate-500 italic">No history available</div>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })()}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
 
               {/* === STAFF TAB === */}
               {activeTab === 'staff' && (
@@ -444,7 +509,7 @@ export const TeamDetail: React.FC<TeamDetailProps> = ({ team, onUpdateTeam, onCl
 
           {/* Scouting Report Modal */}
           {scoutingReport && (
-            <div className="absolute bottom-6 left-6 right-6 bg-slate-800 rounded-xl border border-emerald-500/50 shadow-2xl p-6 animate-in slide-in-from-bottom-10 fade-in duration-300 z-50">
+            <div className="absolute bottom-6 left-6 right-6 bg-slate-800 rounded-xl border border-emerald-500/50 shadow-2xl p-6 animate-in slide-in-from-bottom-10 fade-in duration-300 z-50 max-h-[60vh] overflow-auto custom-scrollbar">
                <div className="flex justify-between items-start mb-2">
                    <div className="flex items-center gap-2">
                         <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
@@ -456,9 +521,29 @@ export const TeamDetail: React.FC<TeamDetailProps> = ({ team, onUpdateTeam, onCl
                         </svg>
                    </button>
                </div>
-               <p className="text-slate-200 text-lg leading-relaxed font-serif italic pl-4 border-l-2 border-emerald-500/30">
+               <p className="text-slate-200 text-lg leading-relaxed font-serif italic pl-4 border-l-2 border-emerald-500/30 mb-4">
                   "{scoutingReport.report}"
                </p>
+               
+               {/* Pitch Repertoire for Pitchers */}
+               {scoutingReport.player.position === 'P' && scoutingReport.player.pitchRepertoire && scoutingReport.player.pitchRepertoire.length > 0 && (
+                  <div className="mt-4 pt-4 border-t border-slate-700">
+                     <h5 className="text-xs font-bold text-emerald-400 uppercase tracking-wider mb-3">Pitch Arsenal (MLB Data)</h5>
+                     <div className="grid grid-cols-2 gap-2">
+                        {scoutingReport.player.pitchRepertoire.map((pitch, idx) => (
+                           <div key={idx} className="bg-slate-900/50 rounded-lg p-3 border border-slate-700/50">
+                              <div className="flex justify-between items-center">
+                                 <span className="font-bold text-white text-sm">{pitch.type}</span>
+                                 <span className="text-emerald-400 font-mono text-xs">{pitch.usage.toFixed(1)}%</span>
+                              </div>
+                              <div className="text-slate-400 text-xs mt-1">
+                                 <span className="font-mono">{pitch.speed.toFixed(1)} mph</span>
+                              </div>
+                           </div>
+                        ))}
+                     </div>
+                  </div>
+               )}
             </div>
           )}
         </div>
