@@ -1,8 +1,201 @@
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Team, Player } from '../types';
 import { generateTeamData } from '../services/leagueService';
 import { getAdvancedScoutingReport } from '../services/scoutingService';
+
+// === ROSTER REGULARS SECTION ===
+type HitterSortKey = 'name' | 'g' | 'avg' | 'hr' | 'rbi' | 'ops' | 'war';
+type PitcherSortKey = 'name' | 'g' | 'gs' | 'w' | 'l' | 'era' | 'ip' | 'so' | 'war';
+
+const RegularsSection: React.FC<{ team: Team }> = ({ team }) => {
+  const [hitterSort, setHitterSort] = useState<{ key: HitterSortKey; dir: 'asc' | 'desc' }>({ key: 'war', dir: 'desc' });
+  const [pitcherSort, setPitcherSort] = useState<{ key: PitcherSortKey; dir: 'asc' | 'desc' }>({ key: 'era', dir: 'asc' });
+
+  // Filter to players with significant playing time (regulars)
+  const hitters = useMemo(() => {
+    const positionPlayers = team.roster.filter(p => 
+      (!['P', 'SP', 'RP', 'CL'].includes(p.position) || p.isTwoWay) &&
+      (p.batting?.gamesPlayed || 0) >= 20 // At least 20 games
+    );
+    return [...positionPlayers].sort((a, b) => {
+      const getValue = (p: Player): number | string => {
+        switch (hitterSort.key) {
+          case 'name': return p.name;
+          case 'g': return p.batting?.gamesPlayed || 0;
+          case 'avg': return p.batting?.avg || 0;
+          case 'hr': return p.batting?.hr || 0;
+          case 'rbi': return p.batting?.rbi || 0;
+          case 'ops': return p.batting?.ops || 0;
+          case 'war': return p.batting?.war || 0;
+        }
+      };
+      const aVal = getValue(a);
+      const bVal = getValue(b);
+      if (typeof aVal === 'string') {
+        return hitterSort.dir === 'asc' ? aVal.localeCompare(bVal as string) : (bVal as string).localeCompare(aVal);
+      }
+      return hitterSort.dir === 'asc' ? (aVal as number) - (bVal as number) : (bVal as number) - (aVal as number);
+    });
+  }, [team.roster, hitterSort]);
+
+  const pitchers = useMemo(() => {
+    const pitchingStaff = team.roster.filter(p => 
+      (['P', 'SP', 'RP', 'CL'].includes(p.position) || p.isTwoWay) &&
+      (p.pitching?.gamesPlayed || 0) >= 10 // At least 10 games
+    );
+    return [...pitchingStaff].sort((a, b) => {
+      const getValue = (p: Player): number | string => {
+        switch (pitcherSort.key) {
+          case 'name': return p.name;
+          case 'g': return p.pitching?.gamesPlayed || 0;
+          case 'gs': return p.pitching?.gamesStarted || 0;
+          case 'w': return p.pitching?.wins || 0;
+          case 'l': return p.pitching?.losses || 0;
+          case 'era': return p.pitching?.era || 99;
+          case 'ip': return p.pitching?.inningsPitched || 0;
+          case 'so': return p.pitching?.strikeouts || 0;
+          case 'war': return p.pitching?.war || 0;
+        }
+      };
+      const aVal = getValue(a);
+      const bVal = getValue(b);
+      if (typeof aVal === 'string') {
+        return pitcherSort.dir === 'asc' ? aVal.localeCompare(bVal as string) : (bVal as string).localeCompare(aVal);
+      }
+      return pitcherSort.dir === 'asc' ? (aVal as number) - (bVal as number) : (bVal as number) - (aVal as number);
+    });
+  }, [team.roster, pitcherSort]);
+
+  const handleHitterSort = (key: HitterSortKey) => {
+    setHitterSort(prev => ({
+      key,
+      dir: prev.key === key && prev.dir === 'desc' ? 'asc' : 'desc'
+    }));
+  };
+
+  const handlePitcherSort = (key: PitcherSortKey) => {
+    setPitcherSort(prev => ({
+      key,
+      dir: prev.key === key && prev.dir === (key === 'era' ? 'asc' : 'desc') ? (key === 'era' ? 'desc' : 'asc') : (key === 'era' ? 'asc' : 'desc')
+    }));
+  };
+
+  const SortHeader = ({ label, sortKey, currentSort, onClick }: { 
+    label: string; 
+    sortKey: string; 
+    currentSort: { key: string; dir: 'asc' | 'desc' }; 
+    onClick: () => void 
+  }) => (
+    <th 
+      className="px-2 py-2 text-right cursor-pointer hover:bg-slate-700/50 transition select-none whitespace-nowrap"
+      onClick={onClick}
+    >
+      <span className="flex items-center justify-end gap-1">
+        {label}
+        {currentSort.key === sortKey && (
+          <span className="text-emerald-400">{currentSort.dir === 'desc' ? '▼' : '▲'}</span>
+        )}
+      </span>
+    </th>
+  );
+
+  return (
+    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 h-full">
+      {/* Hitters Table */}
+      <div className="bg-slate-800/40 rounded-xl border border-slate-700 overflow-hidden shadow-sm flex flex-col">
+        <div className="px-4 py-3 border-b border-slate-700 bg-slate-800/80 backdrop-blur-sm">
+          <h3 className="text-sm font-bold uppercase tracking-wider text-emerald-400">Position Player Regulars</h3>
+          <p className="text-xs text-slate-500 mt-1">Players with 20+ games played • Click headers to sort</p>
+        </div>
+        <div className="overflow-auto flex-1 custom-scrollbar">
+          <table className="w-full text-sm text-left text-slate-300">
+            <thead className="bg-slate-900/50 text-slate-400 text-xs uppercase font-semibold sticky top-0">
+              <tr>
+                <th className="px-3 py-2 text-left w-1/4">Player</th>
+                <SortHeader label="G" sortKey="g" currentSort={hitterSort} onClick={() => handleHitterSort('g')} />
+                <SortHeader label="AVG" sortKey="avg" currentSort={hitterSort} onClick={() => handleHitterSort('avg')} />
+                <SortHeader label="HR" sortKey="hr" currentSort={hitterSort} onClick={() => handleHitterSort('hr')} />
+                <SortHeader label="RBI" sortKey="rbi" currentSort={hitterSort} onClick={() => handleHitterSort('rbi')} />
+                <SortHeader label="OPS" sortKey="ops" currentSort={hitterSort} onClick={() => handleHitterSort('ops')} />
+                <SortHeader label="WAR" sortKey="war" currentSort={hitterSort} onClick={() => handleHitterSort('war')} />
+              </tr>
+            </thead>
+            <tbody>
+              {hitters.length === 0 ? (
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-500">No regulars with 20+ games yet</td></tr>
+              ) : hitters.map(player => (
+                <tr key={player.id} className="border-b border-slate-800 hover:bg-slate-700/30 transition-colors">
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-xs text-slate-500 w-6 text-center bg-slate-800/50 rounded">{player.position}</span>
+                      <span className="font-medium text-slate-200 truncate">{player.name}</span>
+                    </div>
+                  </td>
+                  <td className="px-2 py-2 text-right font-mono">{player.batting?.gamesPlayed || 0}</td>
+                  <td className="px-2 py-2 text-right font-mono">{(player.batting?.avg || 0).toFixed(3)}</td>
+                  <td className="px-2 py-2 text-right font-mono">{player.batting?.hr || 0}</td>
+                  <td className="px-2 py-2 text-right font-mono">{player.batting?.rbi || 0}</td>
+                  <td className="px-2 py-2 text-right font-mono text-emerald-400">{(player.batting?.ops || 0).toFixed(3)}</td>
+                  <td className="px-2 py-2 text-right font-mono font-bold text-white">{(player.batting?.war || 0).toFixed(1)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Pitchers Table */}
+      <div className="bg-slate-800/40 rounded-xl border border-slate-700 overflow-hidden shadow-sm flex flex-col">
+        <div className="px-4 py-3 border-b border-slate-700 bg-slate-800/80 backdrop-blur-sm">
+          <h3 className="text-sm font-bold uppercase tracking-wider text-orange-400">Pitching Staff Regulars</h3>
+          <p className="text-xs text-slate-500 mt-1">Pitchers with 10+ games • Click headers to sort</p>
+        </div>
+        <div className="overflow-auto flex-1 custom-scrollbar">
+          <table className="w-full text-sm text-left text-slate-300">
+            <thead className="bg-slate-900/50 text-slate-400 text-xs uppercase font-semibold sticky top-0">
+              <tr>
+                <th className="px-3 py-2 text-left w-1/5">Player</th>
+                <SortHeader label="G" sortKey="g" currentSort={pitcherSort} onClick={() => handlePitcherSort('g')} />
+                <SortHeader label="GS" sortKey="gs" currentSort={pitcherSort} onClick={() => handlePitcherSort('gs')} />
+                <SortHeader label="W" sortKey="w" currentSort={pitcherSort} onClick={() => handlePitcherSort('w')} />
+                <SortHeader label="L" sortKey="l" currentSort={pitcherSort} onClick={() => handlePitcherSort('l')} />
+                <SortHeader label="ERA" sortKey="era" currentSort={pitcherSort} onClick={() => handlePitcherSort('era')} />
+                <SortHeader label="IP" sortKey="ip" currentSort={pitcherSort} onClick={() => handlePitcherSort('ip')} />
+                <SortHeader label="SO" sortKey="so" currentSort={pitcherSort} onClick={() => handlePitcherSort('so')} />
+                <SortHeader label="WAR" sortKey="war" currentSort={pitcherSort} onClick={() => handlePitcherSort('war')} />
+              </tr>
+            </thead>
+            <tbody>
+              {pitchers.length === 0 ? (
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-500">No regulars with 10+ games yet</td></tr>
+              ) : pitchers.map(player => (
+                <tr key={player.id} className="border-b border-slate-800 hover:bg-slate-700/30 transition-colors">
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <span className={`font-mono text-xs w-6 text-center rounded ${player.rotationSlot <= 5 ? 'bg-blue-900/50 text-blue-400' : 'bg-orange-900/50 text-orange-400'}`}>
+                        {player.rotationSlot <= 5 ? 'SP' : 'RP'}
+                      </span>
+                      <span className="font-medium text-slate-200 truncate">{player.name}</span>
+                    </div>
+                  </td>
+                  <td className="px-2 py-2 text-right font-mono">{player.pitching?.gamesPlayed || 0}</td>
+                  <td className="px-2 py-2 text-right font-mono">{player.pitching?.gamesStarted || 0}</td>
+                  <td className="px-2 py-2 text-right font-mono text-emerald-400">{player.pitching?.wins || 0}</td>
+                  <td className="px-2 py-2 text-right font-mono text-red-400">{player.pitching?.losses || 0}</td>
+                  <td className="px-2 py-2 text-right font-mono font-bold text-white">{(player.pitching?.era || 0).toFixed(2)}</td>
+                  <td className="px-2 py-2 text-right font-mono">{(player.pitching?.inningsPitched || 0).toFixed(1)}</td>
+                  <td className="px-2 py-2 text-right font-mono">{player.pitching?.strikeouts || 0}</td>
+                  <td className="px-2 py-2 text-right font-mono font-bold text-amber-400">{(player.pitching?.war || 0).toFixed(1)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 interface TeamDetailProps {
   team: Team;
@@ -12,7 +205,7 @@ interface TeamDetailProps {
 
 export const TeamDetail: React.FC<TeamDetailProps> = ({ team, onUpdateTeam, onClose }) => {
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<'roster' | 'advanced' | 'history' | 'staff' | 'injuries'>('roster');
+  const [activeTab, setActiveTab] = useState<'roster' | 'regulars' | 'advanced' | 'history' | 'staff' | 'injuries'>('roster');
   const [scoutingReport, setScoutingReport] = useState<{playerId: string, player: Player, report: string} | null>(null);
     const [historyPlayerId, setHistoryPlayerId] = useState<string | null>(null);
 
@@ -127,6 +320,7 @@ export const TeamDetail: React.FC<TeamDetailProps> = ({ team, onUpdateTeam, onCl
           <div className="flex border-b border-slate-700 bg-slate-950/50 overflow-x-auto shrink-0">
             {[
                 { id: 'roster', label: 'Active Roster' },
+                { id: 'regulars', label: 'Roster Regulars' },
                 { id: 'advanced', label: 'Advanced Stats' },
                 { id: 'history', label: 'Career History' },
                 { id: 'staff', label: 'Front Office' },
@@ -230,6 +424,11 @@ export const TeamDetail: React.FC<TeamDetailProps> = ({ team, onUpdateTeam, onCl
                       </div>
                   </div>
                 </div>
+              )}
+
+              {/* === ROSTER REGULARS TAB === */}
+              {activeTab === 'regulars' && (
+                <RegularsSection team={team} />
               )}
 
               {/* === ADVANCED TAB === */}

@@ -71,6 +71,8 @@ export interface BattingStats extends AdvancedBattingStats, StatcastBattingStats
   rbi: number;
   sb: number;
   war: number;
+  gamesPlayed?: number;  // Track games played for leaderboards
+  ibb?: number;          // Intentional walks
 }
 
 export interface PitchingStats extends AdvancedPitchingStats, StatcastPitchingStats {
@@ -84,6 +86,13 @@ export interface PitchingStats extends AdvancedPitchingStats, StatcastPitchingSt
   blownSaves: number;
   war: number;
   pitchesThrown: number;
+  gamesPlayed?: number;    // Track games pitched
+  gamesStarted?: number;   // Track starts
+  wins?: number;           // W-L record
+  losses?: number;
+  strikeouts?: number;     // Alias for so
+  ibb?: number;            // Intentional walks allowed
+  inningsPitched?: number; // Alias for ip
 }
 
 export interface PlayerHistoryEntry {
@@ -209,7 +218,9 @@ export interface StatsCounters {
   ir: number; // Inherited Runners
   irs: number; // Inherited Runners Scored
   rw: number; // Relief Win (optional, usually just W)
-  gs: number; // Games Started
+  gs: number; // Games Started (pitchers)
+  gp: number; // Games Pitched (pitchers)
+  g: number;  // Games Played (hitters)
   
   // Defense
   po: number;

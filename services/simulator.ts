@@ -78,13 +78,19 @@ const getHistoricalPerformance = (player: Player) => {
         else if (avgRecent > 0.250) contactFactor = Math.max(contactFactor, 1.05);
         else if (avgRecent < 0.220 && opsRecent < 0.680) contactFactor = 0.88;
         
-        // Age-based regression (older players like Springer may decline)
-        if (player.age >= 34) {
-            powerFactor *= 0.92;
-            contactFactor *= 0.94;
+        // Age-based regression (significant decline after 32)
+        if (player.age >= 36) {
+            powerFactor *= 0.82;
+            contactFactor *= 0.84;
+        } else if (player.age >= 34) {
+            powerFactor *= 0.88;
+            contactFactor *= 0.90;
         } else if (player.age >= 32) {
-            powerFactor *= 0.96;
-            contactFactor *= 0.97;
+            powerFactor *= 0.93;
+            contactFactor *= 0.94;
+        } else if (player.age >= 30) {
+            powerFactor *= 0.97;
+            contactFactor *= 0.98;
         }
     }
 
@@ -153,9 +159,12 @@ const updateBatterStats = (player: Player, result: string, rbi: number, statcast
     if (!player.batting) player.batting = { 
         avg:0, obp:0, slg:0, ops:0, hr:0, rbi:0, sb:0, wrc_plus:100, war:0, 
         woba: 0, iso: 0, babip: 0, bb_pct: 0, k_pct: 0,
-        exitVelocity: 0, launchAngle: 0, barrel_pct: 0, hardHit_pct: 0, whiff_pct: 0, sprintSpeed: 27 
+        exitVelocity: 0, launchAngle: 0, barrel_pct: 0, hardHit_pct: 0, whiff_pct: 0, sprintSpeed: 27,
+        gamesPlayed: 0, ibb: 0
     };
     const b = player.batting;
+    b.gamesPlayed = s.g; // Update games played from counter
+    b.ibb = s.ibb;        // Update IBB from counter
     
     if (s.ab > 0) {
         b.avg = s.h / s.ab;
@@ -276,17 +285,25 @@ const updatePitcherStats = (player: Player, outcome: string, outsChange: number,
     if (!player.pitching) player.pitching = { 
         era:0, whip:0, so:0, bb:0, ip:0, saves:0, holds:0, blownSaves:0, fip:0, war:0, pitchesThrown: 0,
         xfip: 0, k9: 0, bb9: 0, hr9: 0, csw_pct: 0, siera: 0, babip: 0,
-        avgVelocity: 93, spinRate: 2300, extension: 6.5
+        avgVelocity: 93, spinRate: 2300, extension: 6.5,
+        gamesPlayed: 0, gamesStarted: 0, wins: 0, losses: 0, strikeouts: 0, inningsPitched: 0, ibb: 0
     };
     const p = player.pitching;
 
     p.ip = s.outsPitched / 3;
+    p.inningsPitched = p.ip; // Alias for clarity
     p.so = s.p_so;
+    p.strikeouts = s.p_so; // Alias for clarity
     p.bb = s.p_bb;
+    p.ibb = s.p_ibb; // Intentional walks allowed
     p.saves = s.saves;
     p.holds = s.holds;
     p.blownSaves = s.blownSaves;
     p.pitchesThrown = s.pitchesThrown;
+    p.gamesPlayed = s.gp;
+    p.gamesStarted = s.gs;
+    p.wins = s.wins;
+    p.losses = s.losses;
 
     if (p.ip > 0) {
         p.era = (s.er * 9) / p.ip;
@@ -498,14 +515,19 @@ const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, r
         }
     }
 
-    // HIT PROBABILITY TUNING - Calibrated for realistic ERA (4.2-4.5 league avg)
-    // Target: .245-.255 league AVG, .315-.320 OBP, BABIP ~ .290-.295
-    let hitProb = 0.278 + ((effectiveContact - effectiveStuff) * 0.0030) + (fatiguePenalty * 0.007);
+    // HIT PROBABILITY TUNING - Calibrated for realistic ERA (4.20-4.50 league avg)
+    // Target: .240-.250 league AVG, .310-.315 OBP, fewer +1.000 OPS players
+    let hitProb = 0.262 + ((effectiveContact - effectiveStuff) * 0.0026) + (fatiguePenalty * 0.006);
     
-    if (batterHist.contactFactor > 1.1) hitProb += 0.025;
-    if (batterHist.contactFactor > 1.2) hitProb += 0.020;
-    if (pitcherHist.pitchingFactor > 1.1) hitProb -= 0.022;
-    if (pitcherHist.pitchingFactor > 1.2) hitProb -= 0.015;
+    // Cap contact factor bonuses to prevent inflated OPS
+    const cappedContactFactor = Math.min(batterHist.contactFactor, 1.25);
+    if (cappedContactFactor > 1.1) hitProb += 0.018;
+    if (cappedContactFactor > 1.2) hitProb += 0.012;
+    
+    // Stronger pitcher penalties
+    if (pitcherHist.pitchingFactor > 1.1) hitProb -= 0.028;
+    if (pitcherHist.pitchingFactor > 1.2) hitProb -= 0.020;
+    if (pitcherHist.pitchingFactor > 1.3) hitProb -= 0.012;
     
     const park = parkFactors || { run: 100, hr: 100, babip: 100 };
     const runAdj = park.run / 100;
@@ -558,12 +580,18 @@ const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, r
     }
 
     // HIT
-    // HR Rates: Calibrated for ~1.1-1.3 HR/game per team (2024 MLB avg)
-    let hrProb = 0.075 + ((effectivePower - effectiveStuff) * 0.0035);
-    if (batterHist.powerFactor > 1.2) hrProb += 0.038; 
-    if (batterHist.powerFactor > 1.3) hrProb += 0.028;
+    // HR Rates: Calibrated for realistic ~30-35 HR leader (reduced from 70+)
+    // MLB avg is ~1.1 HR/game per team, leaders hit 45-55 HRs max
+    let hrProb = 0.058 + ((effectivePower - effectiveStuff) * 0.0025);
+    
+    // Cap power factor bonus to prevent Ohtani-type 70+ HR seasons
+    const cappedPowerFactor = Math.min(batterHist.powerFactor, 1.35);
+    if (cappedPowerFactor > 1.2) hrProb += 0.025; 
+    if (cappedPowerFactor > 1.3) hrProb += 0.015;
     hrProb *= (park.hr / 100);
-    hrProb = Math.max(0.030, Math.min(0.28, hrProb));
+    
+    // Tighter cap: max ~18% HR rate on contact (was 28%)
+    hrProb = Math.max(0.025, Math.min(0.18, hrProb));
 
     if (Math.random() < hrProb) {
         return { result: 'HR', type: 'Home Run', desc: 'crushes a home run!', outs: 0, runs: 1, rbi: 1, ev: 105, la: 28 };
@@ -751,7 +779,7 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
             totalExitVelo: 0, battedBallEvents: 0, hardHits: 0, barrels: 0, swings: 0, whiffs: 0, groundouts:0, flyouts:0,
             outsPitched:0, er:0, p_r:0, p_h:0, p_bb:0, p_ibb:0, p_hbp: 0, p_hr: 0, p_so:0, wp:0, bk:0, pk:0, bf:0, 
             wins:0, losses:0, saves:0, holds:0, blownSaves: 0, pitchesThrown: 0, strikes: 0, qs:0, cg:0, sho:0, gf:0, svo:0, ir:0, irs:0, rw:0,
-            gs: 0,
+            gs: 0, gp: 0, g: 0,
             po: 0, a: 0, e: 0, dp: 0, tp:0, pb:0, ofa:0, chances: 0, inn: 0
           });
       }
@@ -809,13 +837,28 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
   gamePitcherStats.set(homePitcher.id, { pitches: 0, runs: 0, startInning: 1, enterScoreDiff: 0, inheritedRunners: 0, inheritedScored: 0 });
   gamePitcherStats.set(awayPitcher.id, { pitches: 0, runs: 0, startInning: 1, enterScoreDiff: 0, inheritedRunners: 0, inheritedScored: 0 });
 
-  recordStat(homePitcher, s => s.gs++);
-  recordStat(awayPitcher, s => s.gs++);
+  recordStat(homePitcher, s => { s.gs++; s.gp++; });
+  recordStat(awayPitcher, s => { s.gs++; s.gp++; });
 
   log.push({ description: `Starters: ${awayPitcher.name} (Away) vs ${homePitcher.name} (Home)`, type: 'info', inning: 0, isTop: true });
 
   const lineups = { home: getBestLineup(home), away: getBestLineup(away) };
   const batIdx = { home: 0, away: 0 };
+  
+  // Track games played for all hitters in the lineup
+  const playersInGame = new Set<string>();
+  lineups.home.forEach(p => {
+    if (!playersInGame.has(p.id)) {
+      recordStat(p, s => s.g++);
+      playersInGame.add(p.id);
+    }
+  });
+  lineups.away.forEach(p => {
+    if (!playersInGame.has(p.id)) {
+      recordStat(p, s => s.g++);
+      playersInGame.add(p.id);
+    }
+  });
   
   const lineScore: LineScore = {
       innings: [],
@@ -859,7 +902,7 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
               homePitcher = newP;
               usedPitchers.add(homePitcher.id);
               homePitcherOrder.push(homePitcher.id);
-              recordStat(homePitcher, s => s.ir += 0); // No runners inheritance logic implemented in simple flow yet
+              recordStat(homePitcher, s => { s.ir += 0; s.gp++; }); // Track games pitched for reliever
               gamePitcherStats.set(homePitcher.id, { pitches: 0, runs: 0, startInning: currentInning, enterScoreDiff: hLead, inheritedRunners: 0, inheritedScored: 0 });
           }
       }
@@ -1114,7 +1157,7 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
               awayPitcher = newP;
               usedPitchers.add(awayPitcher.id);
               awayPitcherOrder.push(awayPitcher.id);
-              recordStat(awayPitcher, s => s.ir += 0);
+              recordStat(awayPitcher, s => { s.ir += 0; s.gp++; }); // Track games pitched for reliever
               gamePitcherStats.set(awayPitcher.id, { pitches: 0, runs: 0, startInning: currentInning, enterScoreDiff: aLead, inheritedRunners: 0, inheritedScored: 0 });
           }
       }
@@ -1529,7 +1572,7 @@ export const progressionSystem = (teams: Team[]) => {
                 totalExitVelo: 0, battedBallEvents: 0, hardHits: 0, barrels: 0, swings: 0, whiffs: 0, groundouts:0, flyouts:0,
                 outsPitched:0, er:0, p_r:0, p_h:0, p_bb:0, p_ibb:0, p_hbp: 0, p_hr: 0, p_so:0, wp:0, bk:0, pk:0, bf:0, 
                 wins:0, losses:0, saves:0, holds:0, blownSaves: 0, pitchesThrown: 0, strikes: 0, qs:0, cg:0, sho:0, gf:0, svo:0, ir:0, irs:0, rw:0,
-                gs: 0,
+                gs: 0, gp: 0, g: 0,
                 po: 0, a: 0, e: 0, dp: 0, tp:0, pb:0, ofa:0, chances: 0, inn: 0
              };
              p.batting = undefined;
