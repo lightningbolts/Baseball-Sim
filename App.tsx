@@ -491,40 +491,42 @@ const App = () => {
     <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-emerald-500 selection:text-white">
       {/* Navigation */}
       <nav className="bg-slate-900 border-b border-slate-800 sticky top-0 z-30 shadow-2xl">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            <div className="flex items-center">
-              <span className="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-cyan-500">
+        <div className="max-w-7xl mx-auto px-2 sm:px-4 lg:px-8">
+          <div className="flex flex-col sm:flex-row items-center justify-between py-2 sm:h-16 gap-2 sm:gap-0">
+            <div className="flex items-center w-full sm:w-auto justify-between sm:justify-start">
+              <span className="text-lg sm:text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-cyan-500">
                 GRAND SLAM SIM
               </span>
-              <span className="ml-4 px-3 py-1 text-xs font-mono bg-slate-800 rounded-full border border-slate-700 text-slate-400">
+              <span className="ml-2 sm:ml-4 px-2 sm:px-3 py-1 text-xs font-mono bg-slate-800 rounded-full border border-slate-700 text-slate-400">
                 {season.date.getFullYear()}
               </span>
             </div>
-            <div className="flex items-center space-x-6">
-                <div className="flex space-x-2 bg-slate-800 rounded-lg p-1">
-                    <button onClick={() => setView('league')} className={`px-3 py-1 text-sm font-bold rounded transition ${view === 'league' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}>League</button>
-                    <button onClick={() => setView('leaderboard')} className={`px-3 py-1 text-sm font-bold rounded transition ${view === 'leaderboard' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}>Leaders</button>
-                    <button onClick={() => setView('archive')} className={`px-3 py-1 text-sm font-bold rounded transition ${view === 'archive' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}>Archive</button>
-                    <button onClick={() => setView('fastsim')} className={`px-3 py-1 text-sm font-bold rounded transition ${view === 'fastsim' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}>Sim Lab</button>
+            <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-4 w-full sm:w-auto">
+                <div className="flex space-x-1 sm:space-x-2 bg-slate-800 rounded-lg p-1 w-full sm:w-auto">
+                    <button onClick={() => setView('league')} className={`flex-1 sm:flex-none px-2 sm:px-3 py-1 text-xs sm:text-sm font-bold rounded transition ${view === 'league' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}>League</button>
+                    <button onClick={() => setView('leaderboard')} className={`flex-1 sm:flex-none px-2 sm:px-3 py-1 text-xs sm:text-sm font-bold rounded transition ${view === 'leaderboard' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}>Leaders</button>
+                    <button onClick={() => setView('archive')} className={`flex-1 sm:flex-none px-2 sm:px-3 py-1 text-xs sm:text-sm font-bold rounded transition ${view === 'archive' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}>Archive</button>
+                    <button onClick={() => setView('fastsim')} className={`flex-1 sm:flex-none px-2 sm:px-3 py-1 text-xs sm:text-sm font-bold rounded transition ${view === 'fastsim' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}>Lab</button>
                 </div>
-               <div className="text-lg font-mono text-emerald-400 font-bold border-r border-slate-700 pr-4 pl-4">
-                  {formattedDate}
-               </div>
-               <button 
-                onClick={toggleSim}
-                className={`px-4 py-2 rounded-md font-bold transition ${season.isPlaying ? 'bg-red-500 hover:bg-red-600 text-white' : 'bg-emerald-500 hover:bg-emerald-600 text-white'}`}
-               >
-                 {season.isPlaying ? 'PAUSE' : 'SIMULATE'}
-               </button>
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  <div className="text-sm sm:text-lg font-mono text-emerald-400 font-bold sm:border-r border-slate-700 sm:pr-4 flex-1 sm:flex-none text-center">
+                    {formattedDate}
+                  </div>
+                  <button 
+                    onClick={toggleSim}
+                    className={`flex-1 sm:flex-none px-3 sm:px-4 py-2 rounded-md font-bold text-sm sm:text-base transition ${season.isPlaying ? 'bg-red-500 hover:bg-red-600 text-white' : 'bg-emerald-500 hover:bg-emerald-600 text-white'}`}
+                  >
+                    {season.isPlaying ? 'PAUSE' : 'SIMULATE'}
+                  </button>
+                </div>
             </div>
           </div>
         </div>
       </nav>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="max-w-7xl mx-auto px-2 sm:px-4 lg:px-8 py-4 sm:py-8">
         {/* Controls Panel */}
-        <div className="mb-8 grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="mb-4 sm:mb-8 grid grid-cols-1 md:grid-cols-4 gap-2 sm:gap-4">
              {/* Same Controls as before */}
              <div className="bg-slate-900 p-4 rounded-lg border border-slate-800 shadow-sm">
                 <h3 className="text-xs uppercase text-slate-500 font-bold mb-2">Sim Controls</h3>
@@ -559,9 +561,9 @@ const App = () => {
                 </div>
              </div>
 
-             <div className="bg-slate-900 p-4 rounded-lg border border-slate-800 shadow-sm md:col-span-3">
+             <div className="bg-slate-900 p-3 sm:p-4 rounded-lg border border-slate-800 shadow-sm md:col-span-3">
                <h3 className="text-xs uppercase text-slate-500 font-bold mb-2">Live Ticker</h3>
-               <div className="h-28 overflow-y-auto pr-2 text-sm text-slate-300 font-mono space-y-1 custom-scrollbar">
+               <div className="h-24 sm:h-28 overflow-y-auto pr-2 text-xs sm:text-sm text-slate-300 font-mono space-y-1 custom-scrollbar">
                   {season.schedule.filter(g => g.played).slice(-5).reverse().map(game => {
                     const home = season.teams.find(t => t.id === game.homeTeamId);
                     const away = season.teams.find(t => t.id === game.awayTeamId);
@@ -603,26 +605,26 @@ const App = () => {
                     <Standings teams={season.teams} league="NL" />
                 </div>
                 
-                <h2 className="text-2xl font-bold text-white border-b border-slate-700 pb-2 mb-6">League Franchises</h2>
-                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 animate-in fade-in slide-in-from-bottom-8">
+                <h2 className="text-xl sm:text-2xl font-bold text-white border-b border-slate-700 pb-2 mb-4 sm:mb-6">League Franchises</h2>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 sm:gap-4 animate-in fade-in slide-in-from-bottom-8">
                     {season.teams.map(team => (
                         <div 
                             key={team.id}
                             onClick={() => setSelectedTeam(team)}
                             className="cursor-pointer group relative bg-slate-800 rounded-xl overflow-hidden shadow-lg hover:shadow-2xl transition transform hover:-translate-y-1 border border-slate-700 hover:border-emerald-500/50"
                         >
-                            <div className="h-2 w-full" style={{ background: `linear-gradient(to right, ${team.primaryColor}, ${team.secondaryColor})` }}></div>
-                            <div className="p-4 flex flex-col items-center">
+                            <div className="h-1.5 sm:h-2 w-full" style={{ background: `linear-gradient(to right, ${team.primaryColor}, ${team.secondaryColor})` }}></div>
+                            <div className="p-2 sm:p-4 flex flex-col items-center">
                                 {team.logoUrl ? (
-                                    <img src={team.logoUrl} alt={`${team.city} ${team.name}`} className="w-16 h-16 mb-3 object-contain" />
+                                    <img src={team.logoUrl} alt={`${team.city} ${team.name}`} className="w-12 h-12 sm:w-16 sm:h-16 mb-2 sm:mb-3 object-contain" />
                                 ) : (
-                                    <div className="w-12 h-12 rounded-full mb-3 flex items-center justify-center text-xl font-bold text-white shadow-inner" style={{backgroundColor: team.primaryColor}}>
+                                    <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-full mb-2 sm:mb-3 flex items-center justify-center text-lg sm:text-xl font-bold text-white shadow-inner" style={{backgroundColor: team.primaryColor}}>
                                         {team.abbreviation[0]}
                                     </div>
                                 )}
-                                <h3 className="font-bold text-white text-center">{team.city}</h3>
+                                <h3 className="font-bold text-sm sm:text-base text-white text-center">{team.city}</h3>
                                 <p className="text-xs text-slate-400">{team.name}</p>
-                                <div className="mt-3 flex gap-2 text-xs font-mono">
+                                <div className="mt-2 sm:mt-3 flex gap-1.5 sm:gap-2 text-xs font-mono">
                                     <span className="text-green-400">{team.wins}W</span>
                                     <span className="text-red-400">{team.losses}L</span>
                                 </div>

@@ -86,36 +86,36 @@ export const TeamDetail: React.FC<TeamDetailProps> = ({ team, onUpdateTeam, onCl
   const containerClass = "bg-slate-800/40 rounded-xl border border-slate-700 overflow-hidden shadow-sm flex flex-col";
 
   return (
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-50 p-4 sm:p-6">
-      <div className="bg-slate-900 w-full max-w-7xl h-[90vh] rounded-2xl border border-slate-700 shadow-2xl overflow-hidden flex flex-col">
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-50 p-2 sm:p-4 lg:p-6">
+      <div className="bg-slate-900 w-full max-w-7xl h-[95vh] sm:h-[90vh] rounded-xl sm:rounded-2xl border border-slate-700 shadow-2xl overflow-hidden flex flex-col">
         
         {/* Header */}
         <div className="relative shrink-0">
             <div className="absolute inset-0 opacity-20" style={{ background: `linear-gradient(135deg, ${team.primaryColor}, ${team.secondaryColor})` }}></div>
-            <div className="relative p-6 flex justify-between items-end border-b border-slate-700">
-                <div className="flex gap-4 items-center">
+            <div className="relative p-3 sm:p-6 flex justify-between items-end border-b border-slate-700">
+                <div className="flex gap-2 sm:gap-4 items-center">
                     {team.logoUrl ? (
-                        <img src={team.logoUrl} alt={`${team.city} ${team.name}`} className="w-20 h-20 rounded-xl shadow-lg" />
+                        <img src={team.logoUrl} alt={`${team.city} ${team.name}`} className="w-12 h-12 sm:w-20 sm:h-20 rounded-lg sm:rounded-xl shadow-lg" />
                     ) : (
-                        <div className="w-20 h-20 rounded-xl shadow-lg flex items-center justify-center text-3xl font-black text-white" style={{backgroundColor: team.primaryColor}}>
+                        <div className="w-12 h-12 sm:w-20 sm:h-20 rounded-lg sm:rounded-xl shadow-lg flex items-center justify-center text-xl sm:text-3xl font-black text-white" style={{backgroundColor: team.primaryColor}}>
                             {team.abbreviation[0]}
                         </div>
                     )}
                     <div>
-                        <h2 className="text-3xl font-bold text-white tracking-tight">{team.city} {team.name}</h2>
-                        <div className="flex items-center gap-4 mt-1 text-sm text-slate-300 font-mono">
-                            <span className="bg-slate-800 px-2 py-0.5 rounded border border-slate-600">{team.league} {team.division}</span>
+                        <h2 className="text-xl sm:text-3xl font-bold text-white tracking-tight">{team.city} {team.name}</h2>
+                        <div className="flex flex-wrap items-center gap-2 sm:gap-4 mt-1 text-xs sm:text-sm text-slate-300 font-mono">
+                            <span className="bg-slate-800 px-1.5 sm:px-2 py-0.5 rounded border border-slate-600">{team.league} {team.division}</span>
                             <span>{team.wins}-{team.losses}</span>
-                            <span className="text-slate-500">|</span>
-                            <span className="flex items-center gap-1">
+                            <span className="hidden sm:inline text-slate-500">|</span>
+                            <span className="hidden sm:flex items-center gap-1">
                                 <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z" /></svg>
                                 {team.stadium}
                             </span>
                         </div>
                     </div>
                 </div>
-                <button onClick={onClose} className="bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-full p-2 transition">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <button onClick={onClose} className="bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-full p-1.5 sm:p-2 transition">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 sm:h-6 sm:w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                     </svg>
                 </button>
