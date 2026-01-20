@@ -54,7 +54,23 @@ const getTeamStrength = (team: Team): TeamStrength => {
   const hitters = team.roster.filter(p => p.position !== Position.P || p.isTwoWay);
   const pitchers = team.roster.filter(p => p.position === Position.P || p.isTwoWay);
 
-  const topHitters = [...hitters].sort((a, b) => b.rating - a.rating).slice(0, 9);
+  // Use historical games to weight player importance (regular starters matter more)
+  const getPlayerWeight = (p: Player): number => {
+    if (!p.history || p.history.length === 0) return 0.5;
+    const recent = p.history.slice(0, 2);
+    const avgGames = recent.reduce((sum, h) => sum + (h.stats.games || 0), 0) / recent.length;
+    // Players with 100+ games get full weight, others get proportional weight
+    return Math.min(1.0, avgGames / 100);
+  };
+
+  // Get top hitters weighted by historical usage
+  const scoredHitters = hitters.map(p => ({
+    player: p,
+    score: p.rating * getPlayerWeight(p),
+    weight: getPlayerWeight(p)
+  })).sort((a, b) => b.score - a.score);
+  
+  const topHitters = scoredHitters.slice(0, 9).map(h => h.player);
   const topPitchers = [...pitchers].sort((a, b) => b.rating - a.rating).slice(0, 5);
 
   const offense = mean(topHitters.map(p => (p.attributes.contact + p.attributes.power + p.attributes.eye) / 3));
@@ -65,10 +81,28 @@ const getTeamStrength = (team: Team): TeamStrength => {
 };
 
 const winProbability = (home: TeamStrength, away: TeamStrength): number => {
+  // Heavily adjusted for realistic MLB outcomes
+  // Target distribution: ~0-2 teams with 100+ wins, most teams between 70-92 wins
+  // Best teams: ~95-100 wins (60-62%), Worst teams: ~60-70 wins (37-43%)
   const diff = home.overall - away.overall;
-  const base = 1 / (1 + Math.pow(10, -diff / 12));
-  const homeAdv = 0.035;
-  return clamp(base + homeAdv, 0.2, 0.8);
+  
+  // Logistic function with MUCH higher divisor = much more parity
+  // Higher divisor = smaller impact from strength differential
+  const base = 1 / (1 + Math.pow(10, -diff / 28));
+  
+  // Home field advantage (~54% historical)
+  const homeAdv = 0.038;
+  
+  // Significant day-to-day variance (any team can beat any team on any day)
+  const variance = (Math.random() * 0.12) - 0.06;
+  
+  // Strong regression to mean: pull extreme probabilities toward 50%
+  // This is crucial for preventing 100+ win teams
+  const rawProb = base + homeAdv + variance;
+  const regressed = 0.50 + (rawProb - 0.50) * 0.72; // 28% regression to mean
+  
+  // Very tight clamp: MLB parity means even bad teams win 38%+ and good teams max ~62%
+  return clamp(regressed, 0.36, 0.64);
 };
 
 const simulateSeries = (teamA: Team, teamB: Team, strengths: Record<string, TeamStrength>, bestOf: number): string => {
@@ -77,8 +111,11 @@ const simulateSeries = (teamA: Team, teamB: Team, strengths: Record<string, Team
   let winsB = 0;
 
   while (winsA < winsNeeded && winsB < winsNeeded) {
+    // For playoff series, add extra variance (anything can happen in October)
     const pA = winProbability(strengths[teamA.id], strengths[teamB.id]);
-    if (Math.random() < pA) winsA++;
+    // Add playoff variance - pull closer to 50%
+    const playoffAdjusted = 0.50 + (pA - 0.50) * 0.75;
+    if (Math.random() < playoffAdjusted) winsA++;
     else winsB++;
   }
 

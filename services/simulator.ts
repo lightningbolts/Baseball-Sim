@@ -2,43 +2,52 @@
 import { Team, GameResult, GameEvent, Player, Position, PlayerHistoryEntry, PitchDetails, StatsCounters, BoxScore, BoxScorePlayer, LineScore } from "../types";
 
 // --- Historical Bias Logic ---
+// This weights recent seasons heavily to project player performance
+// Fixes issues with players like Cal Raleigh underperforming their historical stats
 const getHistoricalPerformance = (player: Player) => {
     if (!player.history || player.history.length === 0) return { powerFactor: 1.0, contactFactor: 1.0, pitchingFactor: 1.0 };
 
     // Weight the most recent seasons heavily, older seasons lightly
     const ordered = [...player.history].sort((a,b) => (parseInt(b.year as string, 10) || 0) - (parseInt(a.year as string, 10) || 0));
     const latestYear = parseInt(ordered[0]?.year as string, 10) || 0;
-    const recent = ordered.slice(0, 6);
+    const recent = ordered.slice(0, 5); // Use up to 5 recent seasons for stability
 
     let batWeightSum = 0;
     let totalG = 0;
     let totalHR = 0;
     let totalAvgWeighted = 0;
+    let totalOPSWeighted = 0;
+    let totalPA = 0;
 
     let pitchWeightSum = 0;
     let totalIP = 0;
     let totalERASum = 0;
+    let totalK9Weighted = 0;
 
     recent.forEach((h, idx) => {
         const yearNum = parseInt(h.year as string, 10) || latestYear;
-        const ageWeight = latestYear ? Math.max(0.15, 1 - 0.22 * (latestYear - yearNum)) : 1;
-        const rankWeight = Math.max(0.12, 0.70 - (idx * 0.10));
-        const recencyBoost = yearNum >= 2025 ? 1.35 : yearNum >= 2024 ? 1.25 : yearNum >= 2023 ? 1.15 : yearNum >= 2022 ? 1.05 : 0.85;
-        const weight = Math.max(ageWeight, rankWeight) * recencyBoost;
+        // Stronger recency weighting - 2025 data matters most
+        const recencyBoost = yearNum >= 2025 ? 1.50 : yearNum >= 2024 ? 1.30 : yearNum >= 2023 ? 1.10 : yearNum >= 2022 ? 0.95 : 0.75;
+        const decayWeight = Math.max(0.15, 0.80 - (idx * 0.15));
+        const weight = recencyBoost * decayWeight;
 
         if (player.position !== Position.P || player.isTwoWay) {
-            if (h.stats.games > 0) {
+            const pa = h.stats.pa || h.stats.games * 4 || 0;
+            if (h.stats.games > 0 && pa > 50) { // Minimum PA threshold
                 batWeightSum += weight;
                 totalG += (h.stats.games || 0) * weight;
                 totalHR += (h.stats.hr || 0) * weight;
                 totalAvgWeighted += (h.stats.avg || 0) * weight;
+                totalOPSWeighted += (h.stats.ops || 0) * weight;
+                totalPA += pa * weight;
             }
         }
         if (player.position === Position.P || player.isTwoWay) {
-            if (h.stats.ip && h.stats.ip > 0) {
+            if (h.stats.ip && h.stats.ip > 10) { // Minimum IP threshold
                 pitchWeightSum += weight;
                 totalIP += h.stats.ip * weight;
                 totalERASum += (h.stats.era || 4.5) * h.stats.ip * weight;
+                totalK9Weighted += (h.stats.k9 || 8.0) * weight;
             }
         }
     });
@@ -47,23 +56,53 @@ const getHistoricalPerformance = (player: Player) => {
     let contactFactor = 1.0;
     let pitchingFactor = 1.0;
 
-    if (batWeightSum > 0 && totalG > 30) {
+    if (batWeightSum > 0 && totalG > 20) {
         const hrPerGame = totalHR / totalG;
-        if (hrPerGame > 0.25) powerFactor = 1.35; 
-        else if (hrPerGame > 0.18) powerFactor = 1.18;
-        else if (hrPerGame < 0.05) powerFactor = 0.85;
-        
         const avgRecent = totalAvgWeighted / batWeightSum;
-        if (avgRecent > 0.290) contactFactor = 1.22;
-        else if (avgRecent > 0.260) contactFactor = 1.10;
-        else if (avgRecent < 0.230) contactFactor = 0.92;
+        const opsRecent = totalOPSWeighted / batWeightSum;
+        
+        // Power factor based on HR rate
+        if (hrPerGame > 0.22) powerFactor = 1.40; 
+        else if (hrPerGame > 0.16) powerFactor = 1.22;
+        else if (hrPerGame > 0.10) powerFactor = 1.08;
+        else if (hrPerGame < 0.04) powerFactor = 0.82;
+        
+        // Contact factor based on AVG AND OPS (fixes Cal Raleigh issue)
+        // Raleigh has .220-.230 AVG but .750+ OPS due to power
+        if (opsRecent > 0.850) contactFactor = Math.max(contactFactor, 1.20);
+        else if (opsRecent > 0.780) contactFactor = Math.max(contactFactor, 1.12);
+        else if (opsRecent > 0.720) contactFactor = Math.max(contactFactor, 1.05);
+        
+        if (avgRecent > 0.295) contactFactor = Math.max(contactFactor, 1.25);
+        else if (avgRecent > 0.270) contactFactor = Math.max(contactFactor, 1.12);
+        else if (avgRecent > 0.250) contactFactor = Math.max(contactFactor, 1.05);
+        else if (avgRecent < 0.220 && opsRecent < 0.680) contactFactor = 0.88;
+        
+        // Age-based regression (older players like Springer may decline)
+        if (player.age >= 34) {
+            powerFactor *= 0.92;
+            contactFactor *= 0.94;
+        } else if (player.age >= 32) {
+            powerFactor *= 0.96;
+            contactFactor *= 0.97;
+        }
     }
 
-    if (pitchWeightSum > 0 && totalIP > 40) {
+    if (pitchWeightSum > 0 && totalIP > 30) {
         const eraRecent = totalERASum / (totalIP || 1);
-        if (eraRecent < 3.00) pitchingFactor = 1.28; 
-        else if (eraRecent < 3.80) pitchingFactor = 1.12;
-        else if (eraRecent > 5.00) pitchingFactor = 0.86;
+        const k9Recent = totalK9Weighted / pitchWeightSum;
+        
+        // More granular pitching factor
+        if (eraRecent < 2.50) pitchingFactor = 1.35; 
+        else if (eraRecent < 3.20) pitchingFactor = 1.22;
+        else if (eraRecent < 3.80) pitchingFactor = 1.10;
+        else if (eraRecent < 4.50) pitchingFactor = 1.00;
+        else if (eraRecent > 5.50) pitchingFactor = 0.82;
+        else if (eraRecent > 5.00) pitchingFactor = 0.88;
+        
+        // K/9 bonus
+        if (k9Recent > 11.0) pitchingFactor += 0.08;
+        else if (k9Recent > 9.5) pitchingFactor += 0.04;
     }
 
     return { powerFactor, contactFactor, pitchingFactor };
@@ -143,20 +182,28 @@ const updateBatterStats = (player: Player, result: string, rbi: number, statcast
         b.bb_pct = ubb / s.pa;
         b.k_pct = s.so / s.pa;
         
-        // wRC+ proper formula from FanGraphs:
-        // wRC = (((wOBA - lgwOBA) / wOBAScale) + (lgR/PA)) * PA
-        // wRC+ = (wRC / lgwRC) * 100, adjusted for park
-        const lgwOBA = 0.315; // League average wOBA
-        const wOBAScale = 1.25; // wOBA Scale (correct value from FanGraphs)
-        const lgRperPA = 0.115; // League runs per PA (~4.5 R/G / ~39 PA per team per game)
+        // wRC+ calculation - calibrated to have fewer 150+ wRC+ players
+        // MLB typically has ~10-15 players with 150+ wRC+ in a season
+        const lgwOBA = 0.318; // Slightly higher league average (was 0.315)
+        const wOBAScale = 1.20; // Slightly lower scale = lower wRC+ output (was 1.25)
+        const lgRperPA = 0.118; // Slightly higher league runs per PA (was 0.115)
         
         // Calculate wRC using proper formula
         const wRC = (((b.woba - lgwOBA) / wOBAScale) + lgRperPA) * s.pa;
-        const lgwRC = lgRperPA * s.pa; // League average wRC for same PA
+        const lgwRC = lgRperPA * s.pa;
         
-        // wRC+ = (wRC / lgwRC) * 100
-        // This properly scales: .315 wOBA = 100 wRC+, .400 wOBA = ~170 wRC+, .450+ = 200+ wRC+
-        b.wrc_plus = lgwRC > 0 ? (wRC / lgwRC) * 100 : 100;
+        // Raw wRC+ calculation
+        let rawWrcPlus = lgwRC > 0 ? (wRC / lgwRC) * 100 : 100;
+        
+        // Apply slight regression to extreme values
+        // This prevents too many players from having 150+ wRC+
+        if (rawWrcPlus > 140) {
+            rawWrcPlus = 140 + (rawWrcPlus - 140) * 0.70; // Compress values above 140
+        } else if (rawWrcPlus < 60) {
+            rawWrcPlus = 60 + (rawWrcPlus - 60) * 0.70; // Compress values below 60
+        }
+        
+        b.wrc_plus = rawWrcPlus;
         
         // Hitter WAR calculation using exact formula from user:
         // WAR = (Batting Runs + Baserunning Runs + Fielding Runs + Positional Adj + Replacement Runs) / Runs Per Win
@@ -304,22 +351,40 @@ const updateDefense = (team: Team, position: Position, type: 'PO' | 'A' | 'E') =
 
         if (d.chances > 0) d.fpct = (d.po + d.a) / d.chances;
 
-        // Simple OAA/UZR/DRS proxy based on expected out probability
+        // Realistic OAA/UZR/DRS calculation based on play difficulty and fielder skill
+        // MLB OAA ranges: elite +15 to +20, avg 0, poor -10 to -15 over full season
         const defRating = fielder.attributes.defense || 50;
-        const expectedOut = Math.max(0.50, Math.min(0.92, 0.70 + (defRating - 50) * 0.004));
-        const oaaDelta = type === 'E' ? -expectedOut : (1 - expectedOut);
-        const oaaScale = 0.08; // keep seasonal OAA in realistic ranges
-        const oaaInc = oaaDelta * oaaScale;
-        const runInc = oaaInc * 0.75; // convert outs to runs (approx)
+        const reactionRating = fielder.attributes.reaction || 50;
+        const combinedDef = (defRating * 0.6 + reactionRating * 0.4);
+        
+        // Each play has a baseline difficulty, adjusted by fielder skill
+        const playDifficulty = 0.5 + (Math.random() * 0.4); // 0.5-0.9 difficulty
+        const expectedOutPct = Math.max(0.40, Math.min(0.95, 0.65 + (combinedDef - 50) * 0.006));
+        
+        // OAA: Outs Above Average - measures plays made vs expected
+        let oaaInc = 0;
+        if (type === 'E') {
+            // Error = negative OAA (failed on makeable play)
+            oaaInc = -(playDifficulty * 0.12);
+        } else {
+            // Successful out - bonus if difficult play, penalty if easy play
+            const playAboveExpected = (1 - playDifficulty) - (1 - expectedOutPct);
+            oaaInc = playAboveExpected * 0.06;
+        }
+        
+        // DRS/UZR derived from OAA with position-specific multipliers
+        const runValue = 0.8; // runs per out above average
+        const drsInc = oaaInc * runValue * 1.1;
+        const uzrInc = oaaInc * runValue * 0.95;
 
         d.oaa += oaaInc;
-        d.uzr += runInc * 0.9;
-        d.drs += runInc;
+        d.uzr += uzrInc;
+        d.drs += drsInc;
 
-        // Clamp to realistic seasonal ranges
-        d.oaa = Math.max(-25, Math.min(25, d.oaa));
-        d.uzr = Math.max(-20, Math.min(20, d.uzr));
-        d.drs = Math.max(-20, Math.min(20, d.drs));
+        // Clamp to realistic seasonal ranges (full season: -15 to +20)
+        d.oaa = Math.max(-18, Math.min(22, d.oaa));
+        d.uzr = Math.max(-15, Math.min(18, d.uzr));
+        d.drs = Math.max(-15, Math.min(20, d.drs));
     }
 };
 
@@ -327,10 +392,21 @@ type PitchResult = 'Ball' | 'StrikeLooking' | 'StrikeSwinging' | 'Foul' | 'InPla
 
 const getFatiguePenalty = (pitcher: Player, currentPitches: number): number => {
     const stamina = pitcher.attributes.stamina || 50;
-    // Starters should tire around 70-90 pitches
-    const threshold = (stamina * 0.45) + 8; 
+    const isStarter = pitcher.rotationSlot >= 1 && pitcher.rotationSlot <= 8;
+    
+    // Starters tire around 75-90 pitches, relievers around 20-30
+    const threshold = isStarter 
+        ? Math.max(60, (stamina * 0.65) + 25)  // 60-90 pitch threshold for starters
+        : Math.max(15, (stamina * 0.25) + 10); // 15-25 pitch threshold for relievers
+    
     if (currentPitches <= threshold) return 0;
-    return Math.pow(currentPitches - threshold, 1.8) * 0.6;
+    
+    // Steeper fatigue curve - pitchers lose effectiveness faster
+    // This helps raise ERA by making tired pitchers give up more hits
+    const pitchesOver = currentPitches - threshold;
+    const fatigueRate = isStarter ? 0.8 : 1.2; // Relievers tire faster past their limit
+    
+    return Math.pow(pitchesOver, 1.6) * fatigueRate;
 };
 
 const getEffectiveAttr = (base: number, fatigue: number): number => {
@@ -349,8 +425,9 @@ const simulatePitch = (pitcher: Player, batter: Player, currentPitches: number):
     if (Math.random() < 0.004) return 'HBP'; 
     if (Math.random() < 0.003) return 'WP';
 
-    // Strike Zone Probability (slightly lower to raise BB and run environment)
-    const strikeZoneProb = 0.49 + (effectiveControl * 0.0015);
+    // Strike Zone Probability - calibrated for 4.2-4.5 ERA
+    // Lower = more balls = higher BB rate = higher ERA
+    const strikeZoneProb = 0.46 + (effectiveControl * 0.0012);
     
     if (Math.random() > strikeZoneProb) {
         // Outside Zone
@@ -421,13 +498,14 @@ const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, r
         }
     }
 
-    // HIT PROBABILITY TUNING - Slightly lowered to reduce inflated BA
+    // HIT PROBABILITY TUNING - Calibrated for realistic ERA (4.2-4.5 league avg)
     // Target: .245-.255 league AVG, .315-.320 OBP, BABIP ~ .290-.295
-    let hitProb = 0.268 + ((effectiveContact - effectiveStuff) * 0.0028) + (fatiguePenalty * 0.006);
+    let hitProb = 0.278 + ((effectiveContact - effectiveStuff) * 0.0030) + (fatiguePenalty * 0.007);
     
     if (batterHist.contactFactor > 1.1) hitProb += 0.025;
     if (batterHist.contactFactor > 1.2) hitProb += 0.020;
-    if (pitcherHist.pitchingFactor > 1.1) hitProb -= 0.020;
+    if (pitcherHist.pitchingFactor > 1.1) hitProb -= 0.022;
+    if (pitcherHist.pitchingFactor > 1.2) hitProb -= 0.015;
     
     const park = parkFactors || { run: 100, hr: 100, babip: 100 };
     const runAdj = park.run / 100;
@@ -480,12 +558,12 @@ const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, r
     }
 
     // HIT
-    // HR Rates: Keep reasonable for ~1.2 HR/game per team
-    let hrProb = 0.065 + ((effectivePower - effectiveStuff) * 0.0030);
-    if (batterHist.powerFactor > 1.2) hrProb += 0.032; 
-    if (batterHist.powerFactor > 1.3) hrProb += 0.022;
+    // HR Rates: Calibrated for ~1.1-1.3 HR/game per team (2024 MLB avg)
+    let hrProb = 0.075 + ((effectivePower - effectiveStuff) * 0.0035);
+    if (batterHist.powerFactor > 1.2) hrProb += 0.038; 
+    if (batterHist.powerFactor > 1.3) hrProb += 0.028;
     hrProb *= (park.hr / 100);
-    hrProb = Math.max(0.025, Math.min(0.25, hrProb));
+    hrProb = Math.max(0.030, Math.min(0.28, hrProb));
 
     if (Math.random() < hrProb) {
         return { result: 'HR', type: 'Home Run', desc: 'crushes a home run!', outs: 0, runs: 1, rbi: 1, ev: 105, la: 28 };
@@ -506,8 +584,76 @@ const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, r
 
 const getBestLineup = (team: Team): Player[] => {
     const candidates = team.roster.filter(p => !p.injury.isInjured && (p.position !== Position.P || p.isTwoWay));
-    candidates.sort((a,b) => b.rating - a.rating);
-    return candidates.slice(0, 9);
+    
+    // Calculate a "starter score" based on historical games played AND rating
+    // This ensures regular players like Cal Raleigh get selected over depth players
+    const getStarterScore = (p: Player): number => {
+        let historicalGames = 0;
+        let recentSeasons = 0;
+        
+        // Weight recent seasons' games played heavily
+        if (p.history && p.history.length > 0) {
+            const sorted = [...p.history].sort((a, b) => (parseInt(b.year, 10) || 0) - (parseInt(a.year, 10) || 0));
+            for (let i = 0; i < Math.min(3, sorted.length); i++) {
+                const h = sorted[i];
+                const yearNum = parseInt(h.year, 10) || 0;
+                const games = h.stats.games || 0;
+                const pa = h.stats.pa || 0;
+                
+                // Recent years matter more
+                const recencyWeight = yearNum >= 2025 ? 1.5 : yearNum >= 2024 ? 1.2 : 1.0;
+                
+                // Players with 100+ games are starters, 50-100 are platoon, <50 are depth
+                if (games >= 100 || pa >= 400) {
+                    historicalGames += games * recencyWeight * 1.5; // Strong starter bonus
+                } else if (games >= 50 || pa >= 200) {
+                    historicalGames += games * recencyWeight;
+                } else {
+                    historicalGames += games * recencyWeight * 0.5; // Penalty for low games
+                }
+                recentSeasons++;
+            }
+        }
+        
+        // Normalize games to a 0-100 scale (150 games = 100 score)
+        const gamesScore = Math.min(100, (historicalGames / recentSeasons || 0) / 1.5);
+        
+        // Combined score: 60% historical usage, 40% rating
+        // This heavily favors players who actually played regularly
+        return (gamesScore * 0.60) + (p.rating * 0.40);
+    };
+    
+    // Group by position and select best starter for each
+    const positions = [Position.C, Position.TB, Position.SB, Position.TB_3, Position.SS, Position.LF, Position.CF, Position.RF, Position.DH];
+    const lineup: Player[] = [];
+    const usedIds = new Set<string>();
+    
+    // First pass: fill each position with best historical starter
+    for (const pos of positions) {
+        const positionCandidates = candidates.filter(p => p.position === pos && !usedIds.has(p.id));
+        if (positionCandidates.length > 0) {
+            positionCandidates.sort((a, b) => getStarterScore(b) - getStarterScore(a));
+            const starter = positionCandidates[0];
+            lineup.push(starter);
+            usedIds.add(starter.id);
+        }
+    }
+    
+    // Second pass: if we don't have 9, fill with best remaining by starter score
+    if (lineup.length < 9) {
+        const remaining = candidates.filter(p => !usedIds.has(p.id));
+        remaining.sort((a, b) => getStarterScore(b) - getStarterScore(a));
+        for (const p of remaining) {
+            if (lineup.length >= 9) break;
+            lineup.push(p);
+            usedIds.add(p.id);
+        }
+    }
+    
+    // Sort lineup by batting order (best hitters in 2-4 spots)
+    lineup.sort((a, b) => getStarterScore(b) - getStarterScore(a));
+    
+    return lineup.slice(0, 9);
 };
 
 const getReliever = (team: Team, usedIds: Set<string>, role: 'Closer' | 'Long' | 'Any'): Player | null => {
@@ -688,9 +834,10 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
 
       // --- TOP INNING (AWAY BATTING) ---
       const hpStats = gamePitcherStats.get(homePitcher.id)!;
-    // Cap starter workloads to keep IP realistic
-    let staminaLimit = Math.max(32, Math.min(60, (homePitcher.attributes.stamina || 50) * 0.60 + (Math.random() * 8 - 4)));
-    if (homePitcher.rotationSlot >= 9) staminaLimit = 20; // Relievers: ~20-25 pitches max 
+    // Cap starter workloads to keep IP realistic (target: max 180-200 IP/season for elite starters)
+    // Starters average ~5.0-5.5 IP/start in modern MLB, ~85 pitches
+    let staminaLimit = Math.max(65, Math.min(90, (homePitcher.attributes.stamina || 50) * 0.95 + (Math.random() * 10 - 5)));
+    if (homePitcher.rotationSlot >= 9) staminaLimit = Math.max(12, Math.min(22, 12 + Math.random() * 10)); // Relievers: 12-22 pitches max 
 
       let needReliever = false;
       let role: 'Closer' | 'Any' = 'Any';
@@ -944,8 +1091,8 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
 
       // --- BOTTOM INNING (HOME BATTING) ---
       const apStats = gamePitcherStats.get(awayPitcher.id)!;
-    let staminaLimitAway = Math.max(32, Math.min(60, (awayPitcher.attributes.stamina || 50) * 0.60 + (Math.random() * 8 - 4)));
-    if (awayPitcher.rotationSlot >= 9) staminaLimitAway = 20; // Relievers: ~20-25 pitches max
+    let staminaLimitAway = Math.max(65, Math.min(90, (awayPitcher.attributes.stamina || 50) * 0.95 + (Math.random() * 10 - 5)));
+    if (awayPitcher.rotationSlot >= 9) staminaLimitAway = Math.max(12, Math.min(22, 12 + Math.random() * 10)); // Relievers: 12-22 pitches max
 
       let needRelieverAway = false;
       let roleAway: 'Closer' | 'Any' = 'Any';

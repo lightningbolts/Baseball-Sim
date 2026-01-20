@@ -36,7 +36,7 @@ export const Postseason: React.FC<PostseasonProps> = ({ bracket, teams, round })
          </div>
          {isComplete && (
             <div className="mt-2 pt-2 border-t border-slate-700 text-center text-xs text-emerald-400 font-semibold">
-              {series.winnerId === t1.id ? t1.name : t2.name} Advances
+              {series.winnerId === t1.id ? t1.name : t2.name} {series.round === 'World Series' ? 'Wins the World Series!' : 'Advances'}
             </div>
          )}
       </div>

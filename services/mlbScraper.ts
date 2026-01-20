@@ -132,23 +132,58 @@ export const fetchCoachingStaff = async (teamMlbId: number): Promise<StaffMember
 
 const fetchPitchArsenal = async (personId: number): Promise<PitchRepertoireEntry[]> => {
     try {
-        // Fetch extended pitching data to get pitch arsenal
-        // Note: The public API endpoint for pitch arsenal specifically often resides in `hydrations` or specific stats calls.
-        // We will try a targeted stat call for `pitchArsenal`.
-        const res = await fetch(`${BASE_URL}/people/${personId}/stats?stats=pitchArsenal&group=pitching`);
-        if (!res.ok) return [];
-        const data = await res.json();
-        const splits = data.stats?.[0]?.splits || [];
+        // Try multiple endpoints for pitch data
+        // 1. Primary: pitchArsenal stats endpoint
+        // 2. Fallback: statSplits with pitch type breakdown
+        const [arsenalRes, splitsRes] = await Promise.all([
+            fetch(`${BASE_URL}/people/${personId}/stats?stats=pitchArsenal&group=pitching`),
+            fetch(`${BASE_URL}/people/${personId}/stats?stats=statSplits&sitCodes=pitch&group=pitching&season=2025`)
+        ]);
         
-        if (splits.length === 0) return [];
-
-        return splits.map((s: any) => ({
-             type: s.type.displayName, // e.g. "Four-Seam Fastball"
-             speed: s.averageSpeed || 0,
-             usage: (s.percentage || 0) * 100
-        })).sort((a: PitchRepertoireEntry, b: PitchRepertoireEntry) => b.usage - a.usage);
+        let arsenal: PitchRepertoireEntry[] = [];
+        
+        // Try primary pitchArsenal endpoint
+        if (arsenalRes.ok) {
+            const data = await arsenalRes.json();
+            const splits = data.stats?.[0]?.splits || [];
+            
+            if (splits.length > 0) {
+                arsenal = splits.map((s: any) => ({
+                    type: s.type?.displayName || s.pitchType?.description || 'Unknown',
+                    speed: s.averageSpeed || s.stat?.avgSpeed || 0,
+                    usage: (s.percentage || s.stat?.pitchPct || 0) * 100
+                })).filter((p: PitchRepertoireEntry) => p.usage > 0);
+            }
+        }
+        
+        // If no data from primary, try splits endpoint
+        if (arsenal.length === 0 && splitsRes.ok) {
+            const splitsData = await splitsRes.json();
+            const pitchSplits = splitsData.stats?.[0]?.splits || [];
+            
+            arsenal = pitchSplits.map((s: any) => {
+                const pitchName = s.split?.description || s.pitchType?.description || 'Fastball';
+                return {
+                    type: pitchName,
+                    speed: s.stat?.avgSpeed || s.stat?.pitchSpeed || 0,
+                    usage: (s.stat?.pitchPercent || s.stat?.pitchPct || 0) * 100
+                };
+            }).filter((p: PitchRepertoireEntry) => p.usage > 1);
+        }
+        
+        // Normalize usage percentages if we have data
+        if (arsenal.length > 0) {
+            const totalUsage = arsenal.reduce((sum, p) => sum + p.usage, 0);
+            if (totalUsage > 0 && Math.abs(totalUsage - 100) > 5) {
+                arsenal = arsenal.map(p => ({ ...p, usage: (p.usage / totalUsage) * 100 }));
+            }
+            console.log(`[${personId}] Fetched ${arsenal.length} pitch types from MLB API`);
+        }
+        
+        return arsenal.sort((a: PitchRepertoireEntry, b: PitchRepertoireEntry) => b.usage - a.usage);
 
     } catch (e) {
+        console.warn(`Failed to fetch pitch arsenal for ${personId}:`, e);
         return [];
     }
 };
@@ -235,20 +270,38 @@ const determineStarterRole = (
 export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
     console.group(`[MLB Scraper] Fetching Real-Time Roster for Team ID: ${teamMlbId}`);
     try {
-        const rosterRes = await fetch(`${BASE_URL}/teams/${teamMlbId}/roster/depthChart`);
-        if (!rosterRes.ok) throw new Error("Failed to fetch roster");
-        const rosterData = await rosterRes.json();
-        const rawList = rosterData.roster || [];
+        // Fetch MULTIPLE roster types to get complete team depth
+        // fullRoster gets 40-man, depthChart gets active, allTime gets additional players
+        const [rosterRes, depthRes, fullRosterRes] = await Promise.all([
+            fetch(`${BASE_URL}/teams/${teamMlbId}/roster?rosterType=active`),
+            fetch(`${BASE_URL}/teams/${teamMlbId}/roster/depthChart`),
+            fetch(`${BASE_URL}/teams/${teamMlbId}/roster?rosterType=fullRoster`)
+        ]);
+        
+        if (!rosterRes.ok && !depthRes.ok && !fullRosterRes.ok) throw new Error("Failed to fetch roster");
+        
+        const [rosterData, depthData, fullRosterData] = await Promise.all([
+            rosterRes.ok ? rosterRes.json() : { roster: [] },
+            depthRes.ok ? depthRes.json() : { roster: [] },
+            fullRosterRes.ok ? fullRosterRes.json() : { roster: [] }
+        ]);
+        
+        // Combine all roster sources
+        const combinedRoster = [
+            ...(fullRosterData.roster || []),
+            ...(rosterData.roster || []),
+            ...(depthData.roster || [])
+        ];
         
         const seenIds = new Set<number>();
-        const uniquePlayersList = rawList.filter((p: any) => {
-            const id = p.person.id;
-            if (seenIds.has(id)) return false;
+        const uniquePlayersList = combinedRoster.filter((p: any) => {
+            const id = p.person?.id;
+            if (!id || seenIds.has(id)) return false;
             seenIds.add(id);
             return true;
         });
 
-        console.log(`Processing ${uniquePlayersList.length} unique players...`);
+        console.log(`Processing ${uniquePlayersList.length} unique players from combined roster sources...`);
 
         const playerPromises = uniquePlayersList.map(async (p: any) => {
             const personId = p.person.id;
@@ -682,13 +735,37 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
         const pitchers = validPlayers.filter(p => p.position === Position.P || (p.isTwoWay && (p as any)._meta.isStarter));
         
         let starters = pitchers.filter(p => (p as any)._meta.isStarter);
-        starters.sort((a,b) => {
+        
+        // Sort rotation by: 1) Recent starts (desc), 2) Recent IP (desc), 3) Historical ERA (asc), 4) Rating (desc)
+        starters.sort((a, b) => {
             const aStarts = (a as any)._meta.recentStarts || 0;
             const bStarts = (b as any)._meta.recentStarts || 0;
             const aIp = (a as any)._meta.recentIp || 0;
             const bIp = (b as any)._meta.recentIp || 0;
-            if (aStarts !== bStarts) return bStarts - aStarts;
-            if (aIp !== bIp) return bIp - aIp;
+            
+            // Get historical ERA for tiebreaking
+            const getHistoricalERA = (p: Player) => {
+                const pitchingHistory = p.history.filter(h => h.stats.era !== undefined && h.stats.ip && h.stats.ip > 20);
+                if (pitchingHistory.length === 0) return 4.50;
+                const recent = pitchingHistory.slice(0, 3);
+                const totalIP = recent.reduce((sum, h) => sum + (h.stats.ip || 0), 0);
+                const weightedERA = recent.reduce((sum, h) => sum + (h.stats.era || 4.50) * (h.stats.ip || 0), 0);
+                return totalIP > 0 ? weightedERA / totalIP : 4.50;
+            };
+            
+            const aEra = getHistoricalERA(a);
+            const bEra = getHistoricalERA(b);
+            
+            // Primary: Recent starts (more starts = higher in rotation)
+            if (Math.abs(aStarts - bStarts) >= 5) return bStarts - aStarts;
+            
+            // Secondary: Recent IP (more IP = higher in rotation)
+            if (Math.abs(aIp - bIp) >= 20) return bIp - aIp;
+            
+            // Tertiary: Historical ERA (lower ERA = higher in rotation)
+            if (Math.abs(aEra - bEra) >= 0.50) return aEra - bEra;
+            
+            // Final: Overall rating
             return b.rating - a.rating;
         });
 
