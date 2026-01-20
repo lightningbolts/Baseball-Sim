@@ -768,9 +768,23 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
 
                 const meta = { isStarter, rating: overall, saves: (s25?.saves || 0), recentStarts, recentIp };
 
-                // Rebase pitch speeds to emphasize velocity spread and power arms
+                // Rebase pitch speeds ONLY for fallback/synthetic arsenals
+                // Real Baseball Savant data should remain untouched
                 const finalRole: 'starter' | 'reliever' = isStarter ? 'starter' : 'reliever';
-                arsenal = rebaseArsenalSpeeds(arsenal.length ? arsenal : buildFallbackArsenal(attributes.velocity, attributes.stuff, finalRole), attributes.velocity, finalRole);
+                
+                // If we have real Baseball Savant data, use it as-is
+                const hasRealData = realPitcherData && realPitcherData.currentArsenal && realPitcherData.currentArsenal.length > 0;
+                
+                if (!hasRealData && arsenal.length === 0) {
+                    // Only use fallback if no real data exists
+                    arsenal = buildFallbackArsenal(attributes.velocity, attributes.stuff, finalRole);
+                }
+                
+                // Only rebase synthetic/fallback arsenals, not real data
+                if (!hasRealData) {
+                    arsenal = rebaseArsenalSpeeds(arsenal, attributes.velocity, finalRole);
+                }
+                
                 const avgVelo = arsenal.reduce((sum, p) => sum + (p.speed * (p.usage || 0)), 0) / (arsenal.reduce((sum, p) => sum + (p.usage || 0), 1));
 
                 const player: Player = {
