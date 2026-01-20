@@ -238,17 +238,19 @@ const updateBatterStats = (player: Player, result: string, rbi: number, statcast
         // Step D: Positional Adjustment (scaled by innings played / 1458)
         // Using PA as proxy: full season = 600 PA ≈ 1458 innings
         const positionAdjustments: { [key: string]: number } = {
-            'C': 12.5, 'SS': 7.5, '2B': 2.5, '3B': 2.5, 'CF': 2.5, 
-            'LF': -7.5, 'RF': -7.5, '1B': -12.5, 'DH': -17.5
+            'C': 10.0, 'SS': 6.0, '2B': 2.0, '3B': 2.0, 'CF': 2.0, 
+            'LF': -6.0, 'RF': -6.0, '1B': -10.0, 'DH': -15.0
         };
-        const posAdj = (positionAdjustments[player.position] || 0) * (s.pa / 600);
+        const posAdj = (positionAdjustments[player.position] || 0) * (s.pa / 650);
         
-        // Step E: Replacement Level Runs = 20 * (PA / 600)
-        const replacementRuns = 20 * (s.pa / 600);
+        // Step E: Replacement Level Runs = 17.5 * (PA / 650) - reduced from 20
+        const replacementRuns = 17.5 * (s.pa / 650);
         
-        // Step F: Final Calculation
-        const runsPerWin = 10.0;
-        b.war = (wRAA + baserunningRuns + fieldingRuns + posAdj + replacementRuns) / runsPerWin;
+        // Step F: Final Calculation with regression toward mean
+        const runsPerWin = 10.5;  // Slightly higher runs/win reduces WAR
+        const rawWar = (wRAA + baserunningRuns + fieldingRuns + posAdj + replacementRuns) / runsPerWin;
+        // Regress extreme WAR values - elite seasons should top out around 8-10 WAR
+        b.war = rawWar > 6 ? 6 + (rawWar - 6) * 0.65 : (rawWar < -1 ? -1 + (rawWar + 1) * 0.70 : rawWar);
     }
 
     if (s.battedBallEvents > 0) {
@@ -517,21 +519,21 @@ const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, r
         }
     }
 
-    // HIT PROBABILITY TUNING - Calibrated for realistic ERA (4.00-4.50 league avg)
-    // Target: .250-.260 league AVG, .320-.330 OBP
-    // BABIP should be ~.300, meaning ~30% of balls in play become hits
-    let hitProb = 0.298 + ((effectiveContact - effectiveStuff) * 0.0028) + (fatiguePenalty * 0.012);
+    // HIT PROBABILITY TUNING - Calibrated for realistic ERA (3.80-4.20 league avg)
+    // Target: .245-.255 league AVG, .315-.325 OBP
+    // BABIP should be ~.295, meaning ~29.5% of balls in play become hits
+    let hitProb = 0.282 + ((effectiveContact - effectiveStuff) * 0.0024) + (fatiguePenalty * 0.010);
     
-    // Apply historical factors - allow stronger impact for proven hitters
-    const cappedContactFactor = Math.min(batterHist.contactFactor, 1.30);
-    if (cappedContactFactor > 1.20) hitProb += 0.025;  // Elite hitters get real advantage
-    else if (cappedContactFactor > 1.10) hitProb += 0.018;
-    else if (cappedContactFactor > 1.05) hitProb += 0.010;
+    // Apply historical factors - moderate impact for proven hitters
+    const cappedContactFactor = Math.min(batterHist.contactFactor, 1.25);
+    if (cappedContactFactor > 1.20) hitProb += 0.018;  // Elite hitters get modest advantage
+    else if (cappedContactFactor > 1.10) hitProb += 0.012;
+    else if (cappedContactFactor > 1.05) hitProb += 0.006;
     
-    // Pitcher effectiveness - reduce impact so ERA is more realistic
-    if (pitcherHist.pitchingFactor > 1.25) hitProb -= 0.018;  // Reduced from 0.045
-    else if (pitcherHist.pitchingFactor > 1.15) hitProb -= 0.012;
-    else if (pitcherHist.pitchingFactor > 1.05) hitProb -= 0.006;
+    // Pitcher effectiveness - balanced impact for ERA differentiation
+    if (pitcherHist.pitchingFactor > 1.15) hitProb -= 0.025;  // Elite pitchers suppress hits
+    else if (pitcherHist.pitchingFactor > 1.10) hitProb -= 0.018;
+    else if (pitcherHist.pitchingFactor > 1.05) hitProb -= 0.010;
     
     const park = parkFactors || { run: 100, hr: 100, babip: 100 };
     const runAdj = park.run / 100;
@@ -584,18 +586,19 @@ const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, r
     }
 
     // HIT
-    // HR Rates: Calibrated for realistic ~30-35 HR leader (reduced from 70+)
+    // HR Rates: Calibrated for realistic ~45-55 HR leader
     // MLB avg is ~1.1 HR/game per team, leaders hit 45-55 HRs max
-    let hrProb = 0.058 + ((effectivePower - effectiveStuff) * 0.0025);
+    let hrProb = 0.052 + ((effectivePower - effectiveStuff) * 0.0020);
     
-    // Cap power factor bonus to prevent Ohtani-type 70+ HR seasons
-    const cappedPowerFactor = Math.min(batterHist.powerFactor, 1.35);
-    if (cappedPowerFactor > 1.2) hrProb += 0.025; 
-    if (cappedPowerFactor > 1.3) hrProb += 0.015;
+    // Cap power factor bonus to prevent extreme HR seasons
+    const cappedPowerFactor = Math.min(batterHist.powerFactor, 1.30);
+    if (cappedPowerFactor > 1.25) hrProb += 0.018; 
+    else if (cappedPowerFactor > 1.15) hrProb += 0.012;
+    else if (cappedPowerFactor > 1.05) hrProb += 0.006;
     hrProb *= (park.hr / 100);
     
-    // Tighter cap: max ~18% HR rate on contact (was 28%)
-    hrProb = Math.max(0.025, Math.min(0.18, hrProb));
+    // Tighter cap: max ~14% HR rate on contact
+    hrProb = Math.max(0.022, Math.min(0.14, hrProb));
 
     if (Math.random() < hrProb) {
         return { result: 'HR', type: 'Home Run', desc: 'crushes a home run!', outs: 0, runs: 1, rbi: 1, ev: 105, la: 28 };
@@ -1248,7 +1251,13 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
           inningScore.away += runsThisPlay;
       }
 
-      if (currentInning >= 9 && homeScore > awayScore) { gameOver = true; break; }
+      if (currentInning >= 9 && homeScore > awayScore) { 
+        // Home team wins without batting in bottom - mark as null (displayed as "-")
+        inningScore.home = -1; // Use -1 as sentinel for "did not bat"
+        lineScore.innings.push(inningScore);
+        gameOver = true; 
+        break; 
+      }
 
       // --- BOTTOM INNING (HOME BATTING) ---
       const apStats = gamePitcherStats.get(awayPitcher.id)!;
@@ -1512,7 +1521,10 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
            inningScore.home += runsThisPlay;
       }
 
-      lineScore.innings.push(inningScore);
+      // Push inning score (only if bottom was played - early game end pushes before break)
+      if (inningScore.home >= 0) {
+          lineScore.innings.push(inningScore);
+      }
       if (currentInning >= 9 && homeScore !== awayScore) gameOver = true;
       currentInning++;
   }

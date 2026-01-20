@@ -85,20 +85,21 @@ const getSimulationStrengths = (baseStrengths: Record<string, TeamStrength>): Re
   const simStrengths: Record<string, TeamStrength> = {};
   
   for (const [teamId, base] of Object.entries(baseStrengths)) {
-    // Add season-long variance: ±5-10 points on overall strength
+    // Add season-long variance: ±8-12 points on overall strength
     // This models injuries, player breakouts/busts, luck factors
     // Variance follows normal-ish distribution (Box-Muller)
     const u1 = Math.random();
     const u2 = Math.random();
     const normalRandom = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
     
-    // Standard deviation of ~6 points covers realistic season variance
-    const variance = normalRandom * 6;
+    // Increased standard deviation of ~8 points for more realistic variance
+    // Even great teams can have bad injury luck, etc.
+    const variance = normalRandom * 8;
     
     simStrengths[teamId] = {
-      offense: clamp(base.offense + variance * 0.5, 30, 90),
-      pitching: clamp(base.pitching + variance * 0.5, 30, 90),
-      overall: clamp(base.overall + variance, 35, 85)
+      offense: clamp(base.offense + variance * 0.6, 30, 85),
+      pitching: clamp(base.pitching + variance * 0.6, 30, 85),
+      overall: clamp(base.overall + variance, 38, 78) // Tighter cap prevents extreme teams
     };
   }
   
@@ -108,25 +109,26 @@ const getSimulationStrengths = (baseStrengths: Record<string, TeamStrength>): Re
 const winProbability = (home: TeamStrength, away: TeamStrength): number => {
   // Calibrated for realistic MLB outcomes with proper variance
   // Target: bell curve of wins centered around 81, SD ~10-12 wins
-  // Best teams: 90-100 wins, Worst teams: 60-75 wins
+  // Best teams: 95-105 wins, Worst teams: 55-70 wins (120 wins should be nearly impossible)
   const diff = home.overall - away.overall;
   
-  // Logistic function - moderate sensitivity to team difference
-  // Divisor of 22-25 gives realistic win probability spread
-  const base = 1 / (1 + Math.pow(10, -diff / 24));
+  // Logistic function - reduced sensitivity to team difference
+  // Higher divisor = less separation between good and bad teams
+  const base = 1 / (1 + Math.pow(10, -diff / 30));
   
-  // Home field advantage (~54% historical = +4%)
-  const homeAdv = 0.04;
+  // Home field advantage (~53% historical = +3%)
+  const homeAdv = 0.03;
   
-  // Per-game variance (any team can beat any team)
-  const gameVariance = (Math.random() * 0.14) - 0.07;
+  // Per-game variance (any team can beat any team - baseball is chaotic)
+  const gameVariance = (Math.random() * 0.16) - 0.08;
   
-  // Moderate regression to mean - keeps spreads realistic
+  // Stronger regression to mean - even great teams lose 1/3 of games
   const rawProb = base + homeAdv + gameVariance;
-  const regressed = 0.50 + (rawProb - 0.50) * 0.80; // 20% regression
+  const regressed = 0.50 + (rawProb - 0.50) * 0.70; // 30% regression toward 50%
   
-  // Realistic clamp: worst teams ~38%, best teams ~62%
-  return clamp(regressed, 0.38, 0.62);
+  // Tighter clamp: best teams ~58%, worst teams ~42%
+  // This means best team vs worst = 58% win rate, not 62%
+  return clamp(regressed, 0.40, 0.58);
 };
 
 const simulateSeries = (teamA: Team, teamB: Team, strengths: Record<string, TeamStrength>, bestOf: number): string => {
@@ -171,10 +173,13 @@ const getHitterProjection = (player: Player): number => {
   return (player.rating * 0.55) + (batting * 0.45) + speedBonus + twoWayBonus;
 };
 
-const getPitcherProjection = (player: Player): number => {
+const getPitcherProjection = (player: Player, forCyYoung: boolean = false): number => {
   const pitching = (player.attributes.stuff + player.attributes.control + player.attributes.stamina) / 3;
   const velocityBonus = player.attributes.velocity * 0.06;
-  return (player.rating * 0.5) + (pitching * 0.5) + velocityBonus;
+  // Two-way players get PENALIZED for Cy Young - they pitch fewer innings
+  // Ohtani typically pitches 130-150 IP vs 200+ for full-time starters
+  const twoWayPenalty = forCyYoung && player.isTwoWay ? -15 : 0;
+  return (player.rating * 0.5) + (pitching * 0.5) + velocityBonus + twoWayPenalty;
 };
 
 const getRookieCandidates = (players: Player[]) => {
@@ -200,7 +205,8 @@ const computeAwardWinners = (
 
   const pitcherScores: PlayerProjection[] = pitchers.map(({ player, teamId }) => ({
     player,
-    score: getPitcherProjection(player) + wins[teamId] * 0.06 + (Math.random() * 6)
+    // Pass true for forCyYoung to apply two-way player penalty
+    score: getPitcherProjection(player, true) + wins[teamId] * 0.06 + (Math.random() * 8)
   }));
 
   const rookies = getRookieCandidates(hitters.map(h => h.player));
@@ -219,20 +225,26 @@ const computeAwardWinners = (
 export const runFastSim = (
   teams: Team[],
   schedule: GameResult[],
-  simulations: number
+  simulations: number,
+  freshProjection: boolean = false  // If true, ignore current standings and simulate full season
 ): FastSimSummary => {
   // Calculate BASE team strengths (will be varied per simulation)
   const baseStrengths: Record<string, TeamStrength> = {};
   teams.forEach(t => { baseStrengths[t.id] = getTeamStrength(t); });
 
+  // If fresh projection, start everyone at 0-0
+  // Otherwise, use current wins/losses
   const baseWins: Record<string, number> = {};
   const baseLosses: Record<string, number> = {};
   teams.forEach(t => {
-    baseWins[t.id] = t.wins;
-    baseLosses[t.id] = t.losses;
+    baseWins[t.id] = freshProjection ? 0 : t.wins;
+    baseLosses[t.id] = freshProjection ? 0 : t.losses;
   });
 
-  const remainingGames = schedule.filter(g => !g.played && !g.isPostseason);
+  // If fresh projection, simulate ALL games (not just remaining)
+  const remainingGames = freshProjection 
+    ? schedule.filter(g => !g.isPostseason)
+    : schedule.filter(g => !g.played && !g.isPostseason);
 
   const winsTotals: Record<string, number[]> = {};
   const playoffCounts: Record<string, number> = {};

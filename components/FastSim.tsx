@@ -1,10 +1,12 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { Team, GameResult } from "../types";
 import { runFastSim, FastSimSummary, AwardEntry } from "../services/fastSim";
 
 interface FastSimProps {
   teams: Team[];
   schedule: GameResult[];
+  savedResults: FastSimSummary | null;
+  onResultsChange: (results: FastSimSummary | null) => void;
 }
 
 const formatPct = (value: number) => `${value.toFixed(1)}%`;
@@ -27,12 +29,19 @@ const AwardTable = ({ title, entries }: { title: string; entries: AwardEntry[] }
   </div>
 );
 
-export const FastSim: React.FC<FastSimProps> = ({ teams, schedule }) => {
+export const FastSim: React.FC<FastSimProps> = ({ teams, schedule, savedResults, onResultsChange }) => {
   const [simCount, setSimCount] = useState(2000);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [results, setResults] = useState<FastSimSummary | null>(null);
   const [selectedTeamId, setSelectedTeamId] = useState<string>(teams[0]?.id || "");
+  const [freshProjection, setFreshProjection] = useState(false);
+  
+  // Use saved results from parent - persists across view changes
+  const results = savedResults;
+  
+  // Calculate remaining games to show warning if season is complete
+  const remainingGames = schedule.filter(g => !g.played && !g.isPostseason).length;
+  const seasonComplete = remainingGames === 0 && schedule.length > 0;
 
   const runSimulation = async () => {
     if (!teams.every(t => t.isRosterGenerated)) {
@@ -44,8 +53,9 @@ export const FastSim: React.FC<FastSimProps> = ({ teams, schedule }) => {
     setProgress(0);
 
     await new Promise(resolve => setTimeout(resolve, 0));
-    const summary = runFastSim(teams, schedule, simCount);
-    setResults(summary);
+    // Pass freshProjection flag to simulate full season from scratch if enabled
+    const summary = runFastSim(teams, schedule, simCount, freshProjection);
+    onResultsChange(summary);
     setSelectedTeamId(teams[0]?.id || "");
     setProgress(100);
 
@@ -84,13 +94,42 @@ export const FastSim: React.FC<FastSimProps> = ({ teams, schedule }) => {
 
   return (
     <div className="space-y-6">
+      {/* Warning banner when season is complete */}
+      {seasonComplete && (
+        <div className="bg-amber-900/30 border border-amber-700 rounded-xl p-4">
+          <div className="flex items-center gap-3">
+            <span className="text-amber-400 text-xl">⚠️</span>
+            <div>
+              <h3 className="text-amber-300 font-semibold">Season Complete</h3>
+              <p className="text-amber-200/70 text-sm">
+                All regular season games have been played. Enable "Fresh Projection" below to simulate a full season from scratch.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+      
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <h2 className="text-xl font-bold text-white">Fast Simulation Lab</h2>
-            <p className="text-sm text-slate-400">Run thousands of seasons per second and estimate odds.</p>
+            <p className="text-sm text-slate-400">
+              Run thousands of seasons per second and estimate odds.
+              {!freshProjection && remainingGames > 0 && <span className="text-emerald-400 ml-2">({remainingGames} games remaining)</span>}
+              {freshProjection && <span className="text-blue-400 ml-2">(Fresh 162-game projection)</span>}
+            </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-col sm:flex-row items-end sm:items-center gap-3">
+            {/* Fresh Projection Toggle */}
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={freshProjection}
+                onChange={(e) => setFreshProjection(e.target.checked)}
+                className="w-4 h-4 accent-blue-500"
+              />
+              <span className="text-xs text-slate-400">Fresh Projection</span>
+            </label>
             <input
               type="number"
               min={100}

@@ -202,7 +202,7 @@ export const GameArchive: React.FC<GameArchiveProps> = ({ schedule, teams }) => 
                                         </tr>
                                         <tr>
                                             <td className="px-2 py-2 text-left font-bold text-white">{getTeam(selectedGame.homeTeamId)?.abbreviation}</td>
-                                            {selectedGame.boxScore.lineScore.innings.map(i => <td key={i.inning} className="px-2 py-2">{i.home}</td>)}
+                                            {selectedGame.boxScore.lineScore.innings.map(i => <td key={i.inning} className="px-2 py-2">{i.home === -1 ? '-' : i.home}</td>)}
                                             <td className="px-2 py-2 font-bold text-white bg-slate-700/50">{selectedGame.boxScore.lineScore.homeTotal}</td>
                                             <td className="px-2 py-2 bg-slate-700/50">{selectedGame.boxScore.lineScore.homeHits}</td>
                                             <td className="px-2 py-2 bg-slate-700/50">{selectedGame.boxScore.lineScore.homeErrors}</td>

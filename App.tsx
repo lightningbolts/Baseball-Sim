@@ -38,6 +38,7 @@ const App = () => {
   const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
   const [simSpeed, setSimSpeed] = useState(500); 
   const [autoInit, setAutoInit] = useState(false);
+  const [fastSimResults, setFastSimResults] = useState<import('./services/fastSim').FastSimSummary | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -600,7 +601,7 @@ const App = () => {
         {view === 'leaderboard' ? (
             <Leaderboard teams={season.teams} />
         ) : view === 'fastsim' ? (
-            <FastSim teams={season.teams} schedule={season.schedule} />
+            <FastSim teams={season.teams} schedule={season.schedule} savedResults={fastSimResults} onResultsChange={setFastSimResults} />
         ) : view === 'archive' ? (
             <GameArchive schedule={season.schedule} teams={season.teams} />
         ) : (
