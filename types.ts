@@ -144,6 +144,8 @@ export interface PlayerHistoryEntry {
     fpct?: number;
     rf9?: number;
   }
+  // Historical pitch arsenal data for this season (from Baseball Savant)
+  pitchArsenal?: PitchRepertoireEntry[];
 }
 
 export interface Injury {

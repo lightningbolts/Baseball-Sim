@@ -1,8 +1,28 @@
 
-
 import { Player, Position, StaffMember, PlayerRatings, PlayerHistoryEntry, StatsCounters, DefensiveStats, PitchRepertoireEntry } from "../types";
 
+// Import real pitch arsenal data fetched from Baseball Savant via pybaseball
+import pitchArsenalData from './pitchArsenals.json';
+
 const BASE_URL = "https://statsapi.mlb.com/api/v1";
+
+// Type the imported arsenal data (new structure with names and history)
+interface PitcherArsenalData {
+    name: string;
+    mlbId: number;
+    currentArsenal: PitchRepertoireEntry[];
+    arsenalHistory: Record<string, PitchRepertoireEntry[]>;  // year -> arsenal
+}
+
+interface PitchArsenalCache {
+    lastUpdated: string;
+    source: string;
+    years: number[];
+    pitcherCount: number;
+    pitchers: Record<string, PitcherArsenalData>;
+}
+
+const realArsenals: PitchArsenalCache = pitchArsenalData as PitchArsenalCache;
 
 const mapPosition = (posData: any): Position => {
     if (
@@ -359,23 +379,57 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                 
                 if (!person) return null;
 
-                // --- PITCH REPERTOIRE FALLBACK: build a diverse arsenal ---
-                let arsenal = arsenalRaw;
-                if (arsenal.length === 0) {
+                // --- PITCH REPERTOIRE: Use real Baseball Savant data first, then MLB API, then fallback ---
+                let arsenal: PitchRepertoireEntry[] = [];
+                let arsenalHistory: Record<string, PitchRepertoireEntry[]> = {};
+                
+                // Priority 1: Check real Baseball Savant data (most accurate, includes historical data)
+                const realPitcherData = realArsenals.pitchers[String(personId)];
+                if (realPitcherData && realPitcherData.currentArsenal && realPitcherData.currentArsenal.length > 0) {
+                    arsenal = realPitcherData.currentArsenal;
+                    arsenalHistory = realPitcherData.arsenalHistory || {};
+                    console.log(`[${personId}] ${realPitcherData.name}: Using real Baseball Savant arsenal (${arsenal.length} pitches, ${Object.keys(arsenalHistory).length} years history)`);
+                }
+                // Priority 2: Use MLB API data if available
+                else if (arsenalRaw && arsenalRaw.length > 0) {
+                    arsenal = arsenalRaw;
+                    console.log(`[${personId}] Using MLB API arsenal: ${arsenal.length} pitches`);
+                }
+                // Priority 3: Build fallback arsenal (rare - only for new/minor league pitchers)
+                else {
                     const role = (p.position?.abbreviation === 'SP') ? 'starter' : 'reliever';
-                    const fallback = buildFallbackArsenal(50, 50, role);
-                    arsenal = fallback;
+                    arsenal = buildFallbackArsenal(50, 50, role);
+                    console.log(`[${personId}] Using fallback arsenal: ${arsenal.length} pitches`);
                 }
 
                 const allStats = statsData.stats || [];
                 const historyMap = new Map<string, PlayerHistoryEntry>();
+                
+                // Pre-populate history with arsenal data from Baseball Savant
+                for (const year of Object.keys(arsenalHistory)) {
+                    historyMap.set(year, {
+                        year,
+                        team: 'MLB',
+                        stats: { games: 0 },
+                        pitchArsenal: arsenalHistory[year]
+                    });
+                }
 
                 const upsertHistory = (entry: PlayerHistoryEntry, groupName: string, weight: number) => {
                     const key = `${entry.year}`;
                     const existing = historyMap.get(key);
                     if (!existing) {
+                        // Add arsenal data if we have it from Baseball Savant
+                        if (arsenalHistory[key]) {
+                            entry.pitchArsenal = arsenalHistory[key];
+                        }
                         historyMap.set(key, entry);
                         return;
+                    }
+                    
+                    // Preserve pitch arsenal when merging
+                    if (arsenalHistory[key] && !existing.pitchArsenal) {
+                        existing.pitchArsenal = arsenalHistory[key];
                     }
 
                     const existingStats = existing.stats as PlayerHistoryEntry['stats'];
