@@ -57,8 +57,12 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({ players, cat
                             const numVal = getValue(player, h.key);
                             let displayVal: string | number = numVal;
                             
+                            // Handle NaN values
+                            if (isNaN(numVal)) {
+                                displayVal = '-';
+                            }
                             // Formatting Logic
-                            if (['avg', 'obp', 'slg', 'ops', 'woba', 'iso', 'babip', 'fpct'].includes(h.key)) displayVal = numVal.toFixed(3).replace('0.', '.');
+                            else if (['avg', 'obp', 'slg', 'ops', 'woba', 'iso', 'babip', 'fpct'].includes(h.key)) displayVal = numVal.toFixed(3).replace('0.', '.');
                             else if (['whip'].includes(h.key)) {
                                 displayVal = numVal > 50 ? '-.--' : numVal.toFixed(2);
                             }
@@ -68,7 +72,7 @@ export const LeaderboardTable: React.FC<LeaderboardTableProps> = ({ players, cat
                             else if (h.key === 'ip') displayVal = formatInnings(player.statsCounters.outsPitched || 0);
                             else if (['ev', 'wrc_plus', 'war', 'drs', 'uzr', 'oaa'].includes(h.key)) displayVal = numVal.toFixed(1);
                             else if (['barrel', 'hardhit', 'whiff', 'bb_pct', 'k_pct'].includes(h.key)) displayVal = (numVal * 100).toFixed(1) + '%';
-                            else if (['pitches', 'so', 'wins', 'pa'].includes(h.key)) displayVal = Math.round(numVal);
+                            else if (['pitches', 'so', 'wins', 'pa', 'g', 'gs'].includes(h.key)) displayVal = Math.round(numVal);
                             
                             return (
                                 <td key={h.key} className={`px-4 py-3 text-right font-mono ${sortKey === h.key ? 'text-emerald-400 font-bold bg-emerald-900/5' : ''}`}>

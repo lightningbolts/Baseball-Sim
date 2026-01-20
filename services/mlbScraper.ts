@@ -152,7 +152,7 @@ const fetchPitchArsenal = async (personId: number): Promise<PitchRepertoireEntry
                     type: s.type?.displayName || s.pitchType?.description || 'Unknown',
                     speed: s.averageSpeed || s.stat?.avgSpeed || 0,
                     usage: (s.percentage || s.stat?.pitchPct || 0) * 100
-                })).filter((p: PitchRepertoireEntry) => p.usage > 0);
+                })).filter((p: PitchRepertoireEntry) => p.usage >= 5); // Only include pitches used 5%+ regularly
             }
         }
         
@@ -168,14 +168,18 @@ const fetchPitchArsenal = async (personId: number): Promise<PitchRepertoireEntry
                     speed: s.stat?.avgSpeed || s.stat?.pitchSpeed || 0,
                     usage: (s.stat?.pitchPercent || s.stat?.pitchPct || 0) * 100
                 };
-            }).filter((p: PitchRepertoireEntry) => p.usage > 1);
+            }).filter((p: PitchRepertoireEntry) => p.usage >= 5); // Only include pitches used 5%+ regularly
         }
         
         // Normalize usage percentages if we have data
+        // Also cap at 6 pitches max (very few pitchers have more than 5 regularly used pitches)
         if (arsenal.length > 0) {
+            // Sort by usage and take top 6 maximum
+            arsenal = arsenal.sort((a, b) => b.usage - a.usage).slice(0, 6);
+            
             const totalUsage = arsenal.reduce((sum, p) => sum + p.usage, 0);
             if (totalUsage > 0 && Math.abs(totalUsage - 100) > 5) {
-                arsenal = arsenal.map(p => ({ ...p, usage: (p.usage / totalUsage) * 100 }));
+                arsenal = arsenal.map(p => ({ ...p, usage: Math.round((p.usage / totalUsage) * 100) }));
             }
             console.log(`[${personId}] Fetched ${arsenal.length} pitch types from MLB API`);
         }
@@ -189,21 +193,49 @@ const fetchPitchArsenal = async (personId: number): Promise<PitchRepertoireEntry
 };
 
 const buildFallbackArsenal = (velocityRating: number, stuff: number, role: 'starter' | 'reliever'): PitchRepertoireEntry[] => {
-    // Build a realistic mix before re-basing speeds later; usage favors heaters and primary breaker
+    // Build a REALISTIC pitch mix - most pitchers have 3-5 pitches, NOT 7-9
+    // MLB average: Starters ~4 pitches, Relievers ~2-3 pitches
     const isPower = velocityRating >= 70 || stuff >= 60;
-    const common: PitchRepertoireEntry[] = [
-        { type: 'Four-Seam Fastball', speed: 95, usage: role === 'reliever' ? 40 : 34 },
-        { type: 'Sinker', speed: 93, usage: 9 },
-        { type: 'Cutter', speed: 92, usage: 7 },
-        { type: 'Slider', speed: 88, usage: role === 'reliever' ? 22 : 18 },
-        { type: 'Changeup', speed: 86, usage: 12 },
-        { type: 'Curveball', speed: 82, usage: 8 },
-        { type: 'Splitter', speed: 85, usage: 6 },
-        { type: 'Sweeper', speed: 84, usage: isPower ? 5 : 3 },
-        { type: 'Knuckle Curve', speed: 80, usage: isPower ? 4 : 3 }
+    
+    // Randomly select a realistic number of pitches based on role
+    // Starters: 3-5 pitches, Relievers: 2-3 pitches
+    const numPitches = role === 'starter' 
+        ? Math.floor(Math.random() * 3) + 3  // 3-5 pitches
+        : Math.floor(Math.random() * 2) + 2; // 2-3 pitches
+    
+    // Primary pitch selection (every pitcher has a fastball)
+    const primaryFastball = Math.random() < 0.65 
+        ? { type: 'Four-Seam Fastball', speed: 95, usage: role === 'reliever' ? 55 : 45 }
+        : { type: 'Sinker', speed: 93, usage: role === 'reliever' ? 50 : 40 };
+    
+    // Available secondary pitch pool
+    const secondaryPool: PitchRepertoireEntry[] = [
+        { type: 'Slider', speed: 88, usage: 25 },
+        { type: 'Changeup', speed: 86, usage: 18 },
+        { type: 'Curveball', speed: 82, usage: 15 },
+        { type: 'Cutter', speed: 92, usage: 20 },
+        { type: 'Sweeper', speed: 84, usage: 18 },
+        { type: 'Splitter', speed: 85, usage: 12 }
     ];
-    const total = common.reduce((sum, p) => sum + p.usage, 0);
-    return common.map(p => ({ ...p, usage: Math.round((p.usage / total) * 100) })).sort((a,b) => b.usage - a.usage);
+    
+    // Shuffle and pick random secondaries
+    const shuffled = secondaryPool.sort(() => Math.random() - 0.5);
+    const selectedSecondaries = shuffled.slice(0, numPitches - 1);
+    
+    // Build final arsenal
+    const arsenal: PitchRepertoireEntry[] = [primaryFastball, ...selectedSecondaries];
+    
+    // Normalize usage to 100%
+    const total = arsenal.reduce((sum, p) => sum + p.usage, 0);
+    const normalized = arsenal.map(p => ({ ...p, usage: Math.round((p.usage / total) * 100) }));
+    
+    // Ensure total is exactly 100%
+    const adjustedTotal = normalized.reduce((sum, p) => sum + p.usage, 0);
+    if (adjustedTotal !== 100) {
+        normalized[0].usage += (100 - adjustedTotal);
+    }
+    
+    return normalized.sort((a, b) => b.usage - a.usage);
 };
 
 const rebaseArsenalSpeeds = (arsenal: PitchRepertoireEntry[], velocityRating: number, role: 'starter' | 'reliever'): PitchRepertoireEntry[] => {
@@ -547,7 +579,7 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                     totalExitVelo: 0, battedBallEvents: 0, hardHits: 0, barrels: 0, swings: 0, whiffs: 0, groundouts:0, flyouts:0,
                     outsPitched:0, er:0, p_r:0, p_h:0, p_bb:0, p_ibb:0, p_hbp: 0, p_hr: 0, p_so:0, wp:0, bk:0, pk:0, bf:0, 
                     wins:0, losses:0, saves:0, holds:0, blownSaves: 0, pitchesThrown: 0, strikes: 0, qs:0, cg:0, sho:0, gf:0, svo:0, ir:0, irs:0, rw:0,
-                    gs: 0,
+                    gs: 0, gp: 0, g: 0,
                     po: 0, a: 0, e: 0, dp: 0, tp:0, pb:0, ofa:0, chances: 0, inn: 0
                 };
 

@@ -438,13 +438,14 @@ const simulatePitch = (pitcher: Player, batter: Player, currentPitches: number):
     const effectiveControl = getEffectiveAttr(pitcher.attributes.control || 50, fatiguePenalty);
     const effectiveEye = getEffectiveAttr(batter.attributes.eye || 50, 0);
     
-    // Rare events
-    if (Math.random() < 0.004) return 'HBP'; 
-    if (Math.random() < 0.003) return 'WP';
+    // Rare events - slightly increased for realism
+    if (Math.random() < 0.005) return 'HBP'; 
+    if (Math.random() < 0.004) return 'WP';
 
-    // Strike Zone Probability - calibrated for 4.2-4.5 ERA
-    // Lower = more balls = higher BB rate = higher ERA
-    const strikeZoneProb = 0.46 + (effectiveControl * 0.0012);
+    // Strike Zone Probability - calibrated for 4.20-4.50 league ERA
+    // MLB average BB/9 is ~3.3, which means ~8.5% of PA are walks
+    // Lower strike zone prob = more balls = higher BB rate = higher ERA
+    const strikeZoneProb = 0.44 + (effectiveControl * 0.0010);
     
     if (Math.random() > strikeZoneProb) {
         // Outside Zone
@@ -457,38 +458,30 @@ const simulatePitch = (pitcher: Player, batter: Player, currentPitches: number):
     }
 
     // Inside Zone
-    const swingProb = 0.77; 
+    const swingProb = 0.78; 
     if (Math.random() > swingProb) {
         return 'StrikeLooking';
     }
 
     // Swing Result
     let effectiveStuff = getEffectiveAttr(pitcher.attributes.stuff || 50, fatiguePenalty * 0.8);
-    if (hist.pitchingFactor > 1.15) effectiveStuff += 5;
+    if (hist.pitchingFactor > 1.15) effectiveStuff += 4; // Reduced bonus
 
     const effectiveContact = getEffectiveAttr(batter.attributes.contact || 50, 0);
     
-    // League Contact% is around 76%
-    let contactProb = 0.80 + ((effectiveContact - effectiveStuff) * 0.0025);
-    contactProb = Math.max(0.50, Math.min(0.95, contactProb));
+    // League Contact% is around 76-78%
+    // Increase contact rate slightly to create more balls in play -> more runs -> higher ERA
+    let contactProb = 0.82 + ((effectiveContact - effectiveStuff) * 0.0022);
+    contactProb = Math.max(0.55, Math.min(0.94, contactProb));
 
     if (Math.random() > contactProb) {
         return 'StrikeSwinging';
     }
 
-    // Foul vs InPlay
-    // Increase Foul Rate to lengthen ABs less, but wait, higher foul rate usually extends ABs.
-    // However, if pitches are inflated, maybe we have too many fouls?
-    // Actually, MLB foul rate is ~17-18% of ALL pitches.
-    // If contact is made, it's either Foul or InPlay.
-    // P(Foul | Contact) ~ 0.38-0.45 range usually.
-    // Previous value 0.28 was too low, making balls in play too frequent -> quick outs?
-    // Wait, quick outs reduce pitch counts.
-    // If pitch counts are HIGH, we need FEWER balls and FEWER fouls.
-    // I increased StrikeZoneProb to reduce Balls.
-    // I will increase Foul Prob slightly to realistic levels (0.35), but rely on the StrikeZoneProb boost to curb deep counts.
+    // Foul vs InPlay - reduce foul rate to increase balls in play
+    // More balls in play = more opportunities for hits = higher ERA
     
-    if (Math.random() < 0.25) return 'Foul';
+    if (Math.random() < 0.22) return 'Foul'; // Lower foul rate = more balls in play
     return 'InPlay';
 };
 
@@ -516,18 +509,20 @@ const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, r
     }
 
     // HIT PROBABILITY TUNING - Calibrated for realistic ERA (4.20-4.50 league avg)
-    // Target: .240-.250 league AVG, .310-.315 OBP, fewer +1.000 OPS players
-    let hitProb = 0.262 + ((effectiveContact - effectiveStuff) * 0.0026) + (fatiguePenalty * 0.006);
+    // Target: .240-.250 league AVG, .310-.315 OBP
+    // KEY FIX: Previous values were too low, causing unrealistically low ERA
+    // MLB league BABIP is ~.300, so hit prob on ball in play should be ~30%
+    let hitProb = 0.288 + ((effectiveContact - effectiveStuff) * 0.0024) + (fatiguePenalty * 0.008);
     
-    // Cap contact factor bonuses to prevent inflated OPS
-    const cappedContactFactor = Math.min(batterHist.contactFactor, 1.25);
-    if (cappedContactFactor > 1.1) hitProb += 0.018;
-    if (cappedContactFactor > 1.2) hitProb += 0.012;
+    // Apply historical factors with caps to prevent extremes
+    const cappedContactFactor = Math.min(batterHist.contactFactor, 1.20);
+    if (cappedContactFactor > 1.1) hitProb += 0.014;
+    if (cappedContactFactor > 1.15) hitProb += 0.010;
     
-    // Stronger pitcher penalties
-    if (pitcherHist.pitchingFactor > 1.1) hitProb -= 0.028;
-    if (pitcherHist.pitchingFactor > 1.2) hitProb -= 0.020;
-    if (pitcherHist.pitchingFactor > 1.3) hitProb -= 0.012;
+    // Pitcher penalties - elite pitchers still suppress hits but more modestly
+    if (pitcherHist.pitchingFactor > 1.1) hitProb -= 0.020;
+    if (pitcherHist.pitchingFactor > 1.2) hitProb -= 0.015;
+    if (pitcherHist.pitchingFactor > 1.3) hitProb -= 0.010;
     
     const park = parkFactors || { run: 100, hr: 100, babip: 100 };
     const runAdj = park.run / 100;
@@ -694,10 +689,42 @@ const getReliever = (team: Team, usedIds: Set<string>, role: 'Closer' | 'Long' |
     
     if (pitchers.length === 0) return team.roster.filter(p => !p.injury.isInjured && (p.position === Position.P || p.isTwoWay) && !usedIds.has(p.id)).sort((a,b) => b.daysRest - a.daysRest)[0] || null;
 
-    return pitchers.sort((a,b) => {
-        if (a.daysRest !== b.daysRest) return b.daysRest - a.daysRest;
-        return b.rating - a.rating;
-    })[0];
+    // Calculate reliever score based on HISTORICAL usage + rating + rest
+    // This ensures established relievers get more work than unknown guys
+    const getRelieverScore = (p: Player): number => {
+        let historicalScore = 0;
+        
+        if (p.history && p.history.length > 0) {
+            const recentPitching = p.history.filter(h => 
+                h.stats.ip !== undefined && h.stats.ip > 0 && 
+                parseInt(h.year, 10) >= 2022
+            ).slice(0, 3);
+            
+            for (const h of recentPitching) {
+                const yearNum = parseInt(h.year, 10) || 0;
+                const recencyWeight = yearNum >= 2025 ? 1.5 : yearNum >= 2024 ? 1.2 : 1.0;
+                
+                // High-leverage relievers: saves + holds + low ERA + high K/9
+                const ip = h.stats.ip || 0;
+                const saves = h.stats.saves || 0;
+                const era = h.stats.era ?? 4.50;
+                const games = h.stats.games || 0;
+                
+                // Score based on high-leverage history
+                const leverageScore = (saves * 3) + games;
+                const qualityScore = Math.max(0, 5.00 - (era || 4.50)) * 10;
+                const volumeScore = Math.min(ip, 70); // Cap at 70 IP (typical reliever max)
+                
+                historicalScore += (leverageScore + qualityScore + volumeScore) * recencyWeight;
+            }
+        }
+        
+        // Combine: 50% historical, 30% rating, 20% rest
+        const restScore = p.daysRest * 10;
+        return (historicalScore * 0.50) + (p.rating * 0.30) + (restScore * 0.20);
+    };
+
+    return pitchers.sort((a, b) => getRelieverScore(b) - getRelieverScore(a))[0];
 };
 
 const getStarter = (team: Team): Player => {
