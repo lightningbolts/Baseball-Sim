@@ -110,8 +110,21 @@ const App = () => {
                 try {
                     const parsedData = JSON.parse(e.target.result as string);
                     if (parsedData.teams && parsedData.date) {
+                        // Merge loaded team data with original TEAMS_DATA to preserve logoUrl and other static properties
+                        const mergedTeams = parsedData.teams.map((loadedTeam: Team) => {
+                            const originalTeam = TEAMS_DATA.find(t => t.id === loadedTeam.id);
+                            return {
+                                ...loadedTeam,
+                                logoUrl: originalTeam?.logoUrl || loadedTeam.logoUrl,
+                                primaryColor: originalTeam?.primaryColor || loadedTeam.primaryColor,
+                                secondaryColor: originalTeam?.secondaryColor || loadedTeam.secondaryColor,
+                                parkFactors: originalTeam?.parkFactors || loadedTeam.parkFactors,
+                            };
+                        });
+                        
                         setSeason({
                             ...parsedData,
+                            teams: mergedTeams,
                             date: new Date(parsedData.date),
                             isPlaying: false 
                         });
