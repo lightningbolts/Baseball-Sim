@@ -80,29 +80,53 @@ const getTeamStrength = (team: Team): TeamStrength => {
   return { offense, pitching, overall };
 };
 
+// Add per-simulation team strength variance to model injury luck, breakouts, etc.
+const getSimulationStrengths = (baseStrengths: Record<string, TeamStrength>): Record<string, TeamStrength> => {
+  const simStrengths: Record<string, TeamStrength> = {};
+  
+  for (const [teamId, base] of Object.entries(baseStrengths)) {
+    // Add season-long variance: ±5-10 points on overall strength
+    // This models injuries, player breakouts/busts, luck factors
+    // Variance follows normal-ish distribution (Box-Muller)
+    const u1 = Math.random();
+    const u2 = Math.random();
+    const normalRandom = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    
+    // Standard deviation of ~6 points covers realistic season variance
+    const variance = normalRandom * 6;
+    
+    simStrengths[teamId] = {
+      offense: clamp(base.offense + variance * 0.5, 30, 90),
+      pitching: clamp(base.pitching + variance * 0.5, 30, 90),
+      overall: clamp(base.overall + variance, 35, 85)
+    };
+  }
+  
+  return simStrengths;
+};
+
 const winProbability = (home: TeamStrength, away: TeamStrength): number => {
-  // Heavily adjusted for realistic MLB outcomes
-  // Target distribution: ~0-2 teams with 100+ wins, most teams between 70-92 wins
-  // Best teams: ~95-100 wins (60-62%), Worst teams: ~60-70 wins (37-43%)
+  // Calibrated for realistic MLB outcomes with proper variance
+  // Target: bell curve of wins centered around 81, SD ~10-12 wins
+  // Best teams: 90-100 wins, Worst teams: 60-75 wins
   const diff = home.overall - away.overall;
   
-  // Logistic function with MUCH higher divisor = much more parity
-  // Higher divisor = smaller impact from strength differential
-  const base = 1 / (1 + Math.pow(10, -diff / 28));
+  // Logistic function - moderate sensitivity to team difference
+  // Divisor of 22-25 gives realistic win probability spread
+  const base = 1 / (1 + Math.pow(10, -diff / 24));
   
-  // Home field advantage (~54% historical)
-  const homeAdv = 0.038;
+  // Home field advantage (~54% historical = +4%)
+  const homeAdv = 0.04;
   
-  // Significant day-to-day variance (any team can beat any team on any day)
-  const variance = (Math.random() * 0.12) - 0.06;
+  // Per-game variance (any team can beat any team)
+  const gameVariance = (Math.random() * 0.14) - 0.07;
   
-  // Strong regression to mean: pull extreme probabilities toward 50%
-  // This is crucial for preventing 100+ win teams
-  const rawProb = base + homeAdv + variance;
-  const regressed = 0.50 + (rawProb - 0.50) * 0.72; // 28% regression to mean
+  // Moderate regression to mean - keeps spreads realistic
+  const rawProb = base + homeAdv + gameVariance;
+  const regressed = 0.50 + (rawProb - 0.50) * 0.80; // 20% regression
   
-  // Very tight clamp: MLB parity means even bad teams win 38%+ and good teams max ~62%
-  return clamp(regressed, 0.36, 0.64);
+  // Realistic clamp: worst teams ~38%, best teams ~62%
+  return clamp(regressed, 0.38, 0.62);
 };
 
 const simulateSeries = (teamA: Team, teamB: Team, strengths: Record<string, TeamStrength>, bestOf: number): string => {
@@ -197,8 +221,9 @@ export const runFastSim = (
   schedule: GameResult[],
   simulations: number
 ): FastSimSummary => {
-  const strengths: Record<string, TeamStrength> = {};
-  teams.forEach(t => { strengths[t.id] = getTeamStrength(t); });
+  // Calculate BASE team strengths (will be varied per simulation)
+  const baseStrengths: Record<string, TeamStrength> = {};
+  teams.forEach(t => { baseStrengths[t.id] = getTeamStrength(t); });
 
   const baseWins: Record<string, number> = {};
   const baseLosses: Record<string, number> = {};
@@ -237,10 +262,14 @@ export const runFastSim = (
   for (let sim = 0; sim < simulations; sim++) {
     const wins: Record<string, number> = { ...baseWins };
     const losses: Record<string, number> = { ...baseLosses };
+    
+    // CRITICAL: Generate per-simulation variance in team strengths
+    // This models season-to-season variance: injuries, breakouts, regression, luck
+    const simStrengths = getSimulationStrengths(baseStrengths);
 
     for (const game of remainingGames) {
-      const homeStrength = strengths[game.homeTeamId];
-      const awayStrength = strengths[game.awayTeamId];
+      const homeStrength = simStrengths[game.homeTeamId];
+      const awayStrength = simStrengths[game.awayTeamId];
       if (!homeStrength || !awayStrength) continue;
 
       const pHome = winProbability(homeStrength, awayStrength);
@@ -278,13 +307,13 @@ export const runFastSim = (
       const seeds = [...divisionWinners, ...wildcards].sort((a, b) => wins[b.id] - wins[a.id]);
       if (seeds.length < 6) return;
 
-      const wc1 = simulateSeries(seeds[2], seeds[5], strengths, 3);
-      const wc2 = simulateSeries(seeds[3], seeds[4], strengths, 3);
+      const wc1 = simulateSeries(seeds[2], seeds[5], simStrengths, 3);
+      const wc2 = simulateSeries(seeds[3], seeds[4], simStrengths, 3);
 
-      const ds1 = simulateSeries(seeds[0], teams.find(t => t.id === wc2)!, strengths, 5);
-      const ds2 = simulateSeries(seeds[1], teams.find(t => t.id === wc1)!, strengths, 5);
+      const ds1 = simulateSeries(seeds[0], teams.find(t => t.id === wc2)!, simStrengths, 5);
+      const ds2 = simulateSeries(seeds[1], teams.find(t => t.id === wc1)!, simStrengths, 5);
 
-      const csWinner = simulateSeries(teams.find(t => t.id === ds1)!, teams.find(t => t.id === ds2)!, strengths, 7);
+      const csWinner = simulateSeries(teams.find(t => t.id === ds1)!, teams.find(t => t.id === ds2)!, simStrengths, 7);
 
       pennantCounts[csWinner]++;
       leagueChampions[league] = csWinner;
@@ -294,7 +323,7 @@ export const runFastSim = (
       const wsWinner = simulateSeries(
         teams.find(t => t.id === leagueChampions.AL)!,
         teams.find(t => t.id === leagueChampions.NL)!,
-        strengths,
+        simStrengths,
         7
       );
       wsCounts[wsWinner]++;

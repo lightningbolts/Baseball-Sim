@@ -168,20 +168,50 @@ export const FastSim: React.FC<FastSimProps> = ({ teams, schedule }) => {
               {selectedTeamOdds ? (
                 histogramData.length > 0 ? (
                   <div className="space-y-3">
-                    <div className="flex items-end gap-1" style={{ height: 180 }}>
+                    {/* Fixed-height container with proper responsive min-widths */}
+                    <div className="flex items-end gap-[2px] sm:gap-1 overflow-x-auto pb-2" style={{ height: 180, minHeight: 180 }}>
                       {histogramData.map(bin => (
-                        <div key={bin.label} className="flex-1 min-w-[8px] flex flex-col items-center">
+                        <div 
+                          key={bin.label} 
+                          className="flex flex-col items-center justify-end"
+                          style={{ 
+                            flex: '1 1 0',
+                            minWidth: histogramData.length > 15 ? '12px' : '20px',
+                            maxWidth: '50px'
+                          }}
+                        >
                           <div
-                            className="w-full bg-emerald-500/80 rounded-t"
-                            style={{ height: `${Math.max(6, (bin.count / maxCount) * 180)}px` }}
+                            className="w-full bg-emerald-500/80 rounded-t transition-all duration-200"
+                            style={{ 
+                              height: `${Math.max(4, (bin.count / maxCount) * 170)}px`,
+                              minHeight: '4px'
+                            }}
                           ></div>
                         </div>
                       ))}
                     </div>
-                    <div className="flex gap-1 text-[10px] text-slate-500">
-                      {histogramData.map(bin => (
-                        <div key={bin.label} className="flex-1 text-center">{bin.label}</div>
+                    {/* Labels with proper overflow handling */}
+                    <div className="flex gap-[2px] sm:gap-1 text-[9px] sm:text-[10px] text-slate-500 overflow-x-auto">
+                      {histogramData.map((bin, idx) => (
+                        <div 
+                          key={bin.label} 
+                          className="text-center whitespace-nowrap"
+                          style={{ 
+                            flex: '1 1 0',
+                            minWidth: histogramData.length > 15 ? '12px' : '20px',
+                            maxWidth: '50px'
+                          }}
+                        >
+                          {/* Show every label on large screens, every other on small */}
+                          <span className="hidden sm:inline">{bin.label}</span>
+                          <span className="sm:hidden">{idx % 2 === 0 ? bin.label.split('-')[0] : ''}</span>
+                        </div>
                       ))}
+                    </div>
+                    {/* Stats summary */}
+                    <div className="flex justify-between text-xs text-slate-400 pt-2 border-t border-slate-800">
+                      <span>Mean: <span className="text-emerald-400 font-mono">{selectedTeamOdds.meanWins.toFixed(1)} W</span></span>
+                      <span>Simulations: <span className="text-slate-300 font-mono">{results?.simulations.toLocaleString()}</span></span>
                     </div>
                   </div>
                 ) : (

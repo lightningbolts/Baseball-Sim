@@ -679,20 +679,57 @@ const getBestLineup = (team: Team): Player[] => {
     return lineup.slice(0, 9);
 };
 
-const getReliever = (team: Team, usedIds: Set<string>, role: 'Closer' | 'Long' | 'Any'): Player | null => {
-    const pitchers = team.roster.filter(p => !p.injury.isInjured && (p.position === Position.P || p.isTwoWay) && !usedIds.has(p.id) && p.daysRest >= 0 && p.rotationSlot >= 9);
+const getReliever = (team: Team, usedIds: Set<string>, role: 'Closer' | 'Setup' | 'Long' | 'Any', inning: number = 9, scoreDiff: number = 0): Player | null => {
+    // Filter available relievers: not injured, is pitcher, not yet used this game, rested, and is a reliever (slot >= 9)
+    // CRITICAL: Also check they haven't exceeded their season workload limits
+    const pitchers = team.roster.filter(p => {
+        if (p.injury.isInjured) return false;
+        if (p.position !== Position.P && !p.isTwoWay) return false;
+        if (usedIds.has(p.id)) return false;
+        if (p.daysRest < 0) return false;
+        if (p.rotationSlot < 9) return false; // Not a reliever
+        
+        // WORKLOAD LIMIT: Relievers max out at ~80 IP/season, typical is 50-70 IP
+        // This prevents relievers from accumulating 200+ IP
+        const currentIP = p.pitching?.ip || 0;
+        const maxSeasonIP = p.rotationSlot === 9 ? 75 : 80; // Closers get fewer innings (high leverage only)
+        if (currentIP >= maxSeasonIP) return false;
+        
+        // Rest requirements: Closers need 1 day, others need 0 but prefer rested arms
+        if (p.rotationSlot === 9 && p.daysRest < 1) return false;
+        
+        return true;
+    });
     
-    if (role === 'Closer') {
+    // CLOSER LOGIC: Use closer in save situations (9th inning, lead of 1-3 runs)
+    if (role === 'Closer' || (inning >= 9 && scoreDiff > 0 && scoreDiff <= 3)) {
         const closer = pitchers.find(p => p.rotationSlot === 9 && p.daysRest >= 1);
         if (closer) return closer;
+        // If closer unavailable, use best available setup man
+        const setupMan = pitchers.filter(p => p.rotationSlot >= 10).sort((a, b) => b.rating - a.rating)[0];
+        if (setupMan) return setupMan;
     }
     
-    if (pitchers.length === 0) return team.roster.filter(p => !p.injury.isInjured && (p.position === Position.P || p.isTwoWay) && !usedIds.has(p.id)).sort((a,b) => b.daysRest - a.daysRest)[0] || null;
+    // SETUP MAN LOGIC: 7th-8th inning in close games
+    if (role === 'Setup' || (inning >= 7 && inning < 9 && Math.abs(scoreDiff) <= 3)) {
+        // Get high-leverage relievers (best rated, not the closer)
+        const setupPitchers = pitchers.filter(p => p.rotationSlot >= 10).sort((a, b) => b.rating - a.rating);
+        if (setupPitchers.length > 0) return setupPitchers[0];
+    }
+    
+    if (pitchers.length === 0) {
+        // Emergency: use any available pitcher
+        return team.roster.filter(p => !p.injury.isInjured && (p.position === Position.P || p.isTwoWay) && !usedIds.has(p.id)).sort((a,b) => b.daysRest - a.daysRest)[0] || null;
+    }
 
-    // Calculate reliever score based on HISTORICAL usage + rating + rest
+    // Calculate reliever score based on HISTORICAL usage + rating + rest + workload
     // This ensures established relievers get more work than unknown guys
     const getRelieverScore = (p: Player): number => {
         let historicalScore = 0;
+        
+        // Penalize overworked pitchers (IP-based fatigue)
+        const currentIP = p.pitching?.ip || 0;
+        const workloadPenalty = currentIP > 50 ? (currentIP - 50) * 2 : 0;
         
         if (p.history && p.history.length > 0) {
             const recentPitching = p.history.filter(h => 
@@ -719,9 +756,10 @@ const getReliever = (team: Team, usedIds: Set<string>, role: 'Closer' | 'Long' |
             }
         }
         
-        // Combine: 50% historical, 30% rating, 20% rest
-        const restScore = p.daysRest * 10;
-        return (historicalScore * 0.50) + (p.rating * 0.30) + (restScore * 0.20);
+        // Combine: 40% historical, 25% rating, 20% rest, 15% workload management
+        const restScore = Math.min(p.daysRest, 3) * 15; // Cap rest bonus at 3 days
+        const workloadBonus = Math.max(0, 50 - (p.pitching?.ip || 0)); // Fresh arms get bonus
+        return (historicalScore * 0.40) + (p.rating * 0.25) + (restScore * 0.20) + (workloadBonus * 0.15) - workloadPenalty;
     };
 
     return pitchers.sort((a, b) => getRelieverScore(b) - getRelieverScore(a))[0];
@@ -904,26 +942,54 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
 
       // --- TOP INNING (AWAY BATTING) ---
       const hpStats = gamePitcherStats.get(homePitcher.id)!;
-    // Cap starter workloads to keep IP realistic (target: max 180-200 IP/season for elite starters)
-    // Starters average ~5.0-5.5 IP/start in modern MLB, ~85 pitches
-    let staminaLimit = Math.max(65, Math.min(90, (homePitcher.attributes.stamina || 50) * 0.95 + (Math.random() * 10 - 5)));
-    if (homePitcher.rotationSlot >= 9) staminaLimit = Math.max(12, Math.min(22, 12 + Math.random() * 10)); // Relievers: 12-22 pitches max 
+    // Modern MLB pitch management: Starters avg 5.0-5.5 IP (~85 pitches), elite get 6-7 IP (~100 pitches)
+    // Relievers: 15-25 pitches max per appearance (average ~17 pitches)
+    const isRelieving = homePitcher.rotationSlot >= 9;
+    let staminaLimit: number;
+    if (isRelieving) {
+        // Reliever pitch limits: 15-25 pitches, closers typically get 15-20
+        const isCloser = homePitcher.rotationSlot === 9;
+        staminaLimit = isCloser 
+            ? Math.max(12, Math.min(20, 15 + Math.random() * 5))
+            : Math.max(15, Math.min(28, 18 + Math.random() * 10));
+    } else {
+        // Starter pitch limits: 75-100 based on stamina
+        staminaLimit = Math.max(70, Math.min(100, (homePitcher.attributes.stamina || 50) * 0.90 + 45 + (Math.random() * 10 - 5)));
+    }
 
       let needReliever = false;
-      let role: 'Closer' | 'Any' = 'Any';
-
-    if (hpStats.pitches > staminaLimit) needReliever = true;
-    if (currentInning >= 7 && hpStats.pitches > staminaLimit * 0.9) needReliever = true;
-      if (hpStats.runs > 4 && currentInning < 6) needReliever = true; // Pull struggling starters
-      if (hpStats.runs > 6) needReliever = true;
+      let role: 'Closer' | 'Setup' | 'Any' = 'Any';
       const hLead = homeScore - awayScore;
-      if (currentInning >= 9 && hLead > 0 && hLead <= 3 && homePitcher.trait !== 'Closer') {
-           needReliever = true;
-           role = 'Closer';
-      }
+
+    // Pitch count triggers
+    if (hpStats.pitches >= staminaLimit) needReliever = true;
+    
+    // Late-game management: bring in setup/closer in high-leverage situations
+    if (currentInning >= 8 && !isRelieving && hpStats.pitches > staminaLimit * 0.85) needReliever = true;
+    if (currentInning >= 7 && Math.abs(hLead) <= 2 && !isRelieving) {
+        needReliever = true;
+        role = 'Setup';
+    }
+    
+    // Performance-based hooks
+    if (hpStats.runs >= 4 && currentInning <= 5) needReliever = true; // Pull struggling starters early
+    if (hpStats.runs >= 5) needReliever = true; // Always pull after 5 runs
+    if (currentInning >= 6 && hpStats.runs >= 3 && hpStats.pitches > 75) needReliever = true;
+    
+    // Save situation: 9th inning, leading by 1-3 runs
+    if (currentInning >= 9 && hLead > 0 && hLead <= 3 && homePitcher.trait !== 'Closer') {
+        needReliever = true;
+        role = 'Closer';
+    }
+    
+    // Setup situation: 8th inning, close game
+    if (currentInning === 8 && hLead > 0 && hLead <= 3 && homePitcher.trait !== 'Closer' && !isRelieving) {
+        needReliever = true;
+        role = 'Setup';
+    }
 
       if (needReliever) {
-          const newP = getReliever(home, usedPitchers, role);
+          const newP = getReliever(home, usedPitchers, role, currentInning, hLead);
           if (newP) {
               log.push({ description: `Pitching Change: ${newP.name} replaces ${homePitcher.name}`, type: 'info', inning: currentInning, isTop: true });
               homePitcher = newP;
@@ -1161,24 +1227,51 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
 
       // --- BOTTOM INNING (HOME BATTING) ---
       const apStats = gamePitcherStats.get(awayPitcher.id)!;
-    let staminaLimitAway = Math.max(65, Math.min(90, (awayPitcher.attributes.stamina || 50) * 0.95 + (Math.random() * 10 - 5)));
-    if (awayPitcher.rotationSlot >= 9) staminaLimitAway = Math.max(12, Math.min(22, 12 + Math.random() * 10)); // Relievers: 12-22 pitches max
+    // Away team pitch management - same logic as home
+    const isRelievingAway = awayPitcher.rotationSlot >= 9;
+    let staminaLimitAway: number;
+    if (isRelievingAway) {
+        const isCloserAway = awayPitcher.rotationSlot === 9;
+        staminaLimitAway = isCloserAway 
+            ? Math.max(12, Math.min(20, 15 + Math.random() * 5))
+            : Math.max(15, Math.min(28, 18 + Math.random() * 10));
+    } else {
+        staminaLimitAway = Math.max(70, Math.min(100, (awayPitcher.attributes.stamina || 50) * 0.90 + 45 + (Math.random() * 10 - 5)));
+    }
 
       let needRelieverAway = false;
-      let roleAway: 'Closer' | 'Any' = 'Any';
-
-    if (apStats.pitches > staminaLimitAway) needRelieverAway = true;
-    if (currentInning >= 7 && apStats.pitches > staminaLimitAway * 0.9) needRelieverAway = true;
-      if (apStats.runs > 4 && currentInning < 6) needRelieverAway = true;
-      if (apStats.runs > 6) needRelieverAway = true;
+      let roleAway: 'Closer' | 'Setup' | 'Any' = 'Any';
       const aLead = awayScore - homeScore;
-      if (currentInning >= 9 && aLead > 0 && aLead <= 3 && awayPitcher.trait !== 'Closer') {
-           needRelieverAway = true;
-           roleAway = 'Closer';
-      }
+
+    // Pitch count triggers
+    if (apStats.pitches >= staminaLimitAway) needRelieverAway = true;
+    
+    // Late-game management
+    if (currentInning >= 8 && !isRelievingAway && apStats.pitches > staminaLimitAway * 0.85) needRelieverAway = true;
+    if (currentInning >= 7 && Math.abs(aLead) <= 2 && !isRelievingAway) {
+        needRelieverAway = true;
+        roleAway = 'Setup';
+    }
+    
+    // Performance-based hooks
+    if (apStats.runs >= 4 && currentInning <= 5) needRelieverAway = true;
+    if (apStats.runs >= 5) needRelieverAway = true;
+    if (currentInning >= 6 && apStats.runs >= 3 && apStats.pitches > 75) needRelieverAway = true;
+    
+    // Save situation
+    if (currentInning >= 9 && aLead > 0 && aLead <= 3 && awayPitcher.trait !== 'Closer') {
+        needRelieverAway = true;
+        roleAway = 'Closer';
+    }
+    
+    // Setup situation
+    if (currentInning === 8 && aLead > 0 && aLead <= 3 && awayPitcher.trait !== 'Closer' && !isRelievingAway) {
+        needRelieverAway = true;
+        roleAway = 'Setup';
+    }
 
       if (needRelieverAway) {
-          const newP = getReliever(away, usedPitchers, roleAway);
+          const newP = getReliever(away, usedPitchers, roleAway, currentInning, aLead);
           if (newP) {
               log.push({ description: `Pitching Change: ${newP.name} replaces ${awayPitcher.name}`, type: 'info', inning: currentInning, isTop: false });
               awayPitcher = newP;
