@@ -85,21 +85,21 @@ const getSimulationStrengths = (baseStrengths: Record<string, TeamStrength>): Re
   const simStrengths: Record<string, TeamStrength> = {};
   
   for (const [teamId, base] of Object.entries(baseStrengths)) {
-    // Add season-long variance: ±5-8 points on overall strength
+    // Add season-long variance: ±4-6 points on overall strength
     // This models injuries, player breakouts/busts, luck factors
     // Variance follows normal-ish distribution (Box-Muller)
     const u1 = Math.random();
     const u2 = Math.random();
     const normalRandom = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
     
-    // Moderate standard deviation of ~5 points
-    const variance = normalRandom * 5;
+    // Reduced standard deviation of ~4 points - preserves team quality differences
+    const variance = normalRandom * 4;
     
     simStrengths[teamId] = {
-      offense: clamp(base.offense + variance * 0.6, 25, 90),
-      pitching: clamp(base.pitching + variance * 0.6, 25, 90),
-      // Allow full range of team strengths - don't over-clamp
-      overall: clamp(base.overall + variance, 30, 85)
+      offense: clamp(base.offense + variance * 0.5, 20, 95),
+      pitching: clamp(base.pitching + variance * 0.5, 20, 95),
+      // Wide range to preserve elite/bad team separation
+      overall: clamp(base.overall + variance, 25, 90)
     };
   }
   
@@ -109,27 +109,27 @@ const getSimulationStrengths = (baseStrengths: Record<string, TeamStrength>): Re
 const winProbability = (home: TeamStrength, away: TeamStrength): number => {
   // Calibrated for realistic MLB outcomes
   // 2025 Reference: Brewers 95 wins, Rockies 43 wins (52 game spread)
-  // Target: Best teams ~95-100 wins, Worst teams ~55-65 wins
+  // Target: Best teams ~95-105 wins, Worst teams ~45-60 wins
   const diff = home.overall - away.overall;
   
-  // Logistic function - moderate sensitivity to team difference
-  // Divisor of 18 gives good separation between good and bad teams
-  const base = 1 / (1 + Math.pow(10, -diff / 18));
+  // Logistic function - higher sensitivity to team difference
+  // Lower divisor = more impact from team quality
+  const base = 1 / (1 + Math.pow(10, -diff / 14));
   
   // Home field advantage (~54% historical = +4%)
   const homeAdv = 0.04;
   
   // Per-game variance (any team can beat any team - baseball is chaotic)
-  const gameVariance = (Math.random() * 0.12) - 0.06;
+  const gameVariance = (Math.random() * 0.10) - 0.05;
   
-  // Light regression to mean - prevents extreme outcomes but allows spread
+  // Minimal regression - let team quality shine through
   const rawProb = base + homeAdv + gameVariance;
-  const regressed = 0.50 + (rawProb - 0.50) * 0.88; // Only 12% regression
+  const regressed = 0.50 + (rawProb - 0.50) * 0.94; // Only 6% regression
   
-  // Wider clamp: allows realistic spread
-  // Best team vs worst = ~65% win rate
-  // This produces ~95-100 wins for elite teams, ~55-65 for bad teams
-  return clamp(regressed, 0.32, 0.68);
+  // Wide clamp: allows realistic spread
+  // Best team vs worst can win ~70% of games
+  // This produces ~100+ wins for elite teams, ~50-60 for bad teams
+  return clamp(regressed, 0.28, 0.72);
 };
 
 const simulateSeries = (teamA: Team, teamB: Team, strengths: Record<string, TeamStrength>, bestOf: number): string => {
