@@ -61,22 +61,28 @@ const getHistoricalPerformance = (player: Player) => {
         const avgRecent = totalAvgWeighted / batWeightSum;
         const opsRecent = totalOPSWeighted / batWeightSum;
         
-        // Power factor based on HR rate
-        if (hrPerGame > 0.22) powerFactor = 1.40; 
-        else if (hrPerGame > 0.16) powerFactor = 1.22;
-        else if (hrPerGame > 0.10) powerFactor = 1.08;
-        else if (hrPerGame < 0.04) powerFactor = 0.82;
+        // Power factor based on HR rate - more granular tiers
+        // Cal Raleigh 2025: 60 HR in 121 G = 0.496 HR/G (elite power)
+        if (hrPerGame > 0.40) powerFactor = 1.55;       // Elite power (50+ HR pace)
+        else if (hrPerGame > 0.30) powerFactor = 1.45;  // Great power (40+ HR pace)
+        else if (hrPerGame > 0.22) powerFactor = 1.35;  // Very good power (35+ HR pace)
+        else if (hrPerGame > 0.16) powerFactor = 1.20;  // Good power (25+ HR pace)
+        else if (hrPerGame > 0.10) powerFactor = 1.08;  // Average power
+        else if (hrPerGame < 0.04) powerFactor = 0.85;  // Low power
         
-        // Contact factor based on AVG AND OPS (fixes Cal Raleigh issue)
-        // Raleigh has .220-.230 AVG but .750+ OPS due to power
-        if (opsRecent > 0.850) contactFactor = Math.max(contactFactor, 1.20);
-        else if (opsRecent > 0.780) contactFactor = Math.max(contactFactor, 1.12);
-        else if (opsRecent > 0.720) contactFactor = Math.max(contactFactor, 1.05);
+        // Contact/OPS factor - OPS is key for players like Cal Raleigh
+        // Raleigh has .220-.250 AVG but .750-.950 OPS due to power + walks
+        if (opsRecent > 0.900) contactFactor = Math.max(contactFactor, 1.30);  // Elite OPS
+        else if (opsRecent > 0.850) contactFactor = Math.max(contactFactor, 1.22);
+        else if (opsRecent > 0.800) contactFactor = Math.max(contactFactor, 1.15);
+        else if (opsRecent > 0.750) contactFactor = Math.max(contactFactor, 1.08);
+        else if (opsRecent > 0.700) contactFactor = Math.max(contactFactor, 1.02);
         
+        // AVG-based contact (secondary to OPS)
         if (avgRecent > 0.295) contactFactor = Math.max(contactFactor, 1.25);
         else if (avgRecent > 0.270) contactFactor = Math.max(contactFactor, 1.12);
         else if (avgRecent > 0.250) contactFactor = Math.max(contactFactor, 1.05);
-        else if (avgRecent < 0.220 && opsRecent < 0.680) contactFactor = 0.88;
+        else if (avgRecent < 0.210 && opsRecent < 0.650) contactFactor = 0.85;
         
         // Age-based regression (significant decline after 32)
         if (player.age >= 36) {
@@ -98,17 +104,20 @@ const getHistoricalPerformance = (player: Player) => {
         const eraRecent = totalERASum / (totalIP || 1);
         const k9Recent = totalK9Weighted / pitchWeightSum;
         
-        // More granular pitching factor
-        if (eraRecent < 2.50) pitchingFactor = 1.35; 
-        else if (eraRecent < 3.20) pitchingFactor = 1.22;
-        else if (eraRecent < 3.80) pitchingFactor = 1.10;
-        else if (eraRecent < 4.50) pitchingFactor = 1.00;
-        else if (eraRecent > 5.50) pitchingFactor = 0.82;
-        else if (eraRecent > 5.00) pitchingFactor = 0.88;
+        // Reduced pitching factor impact - prevents unrealistically low ERAs
+        // Elite pitchers should still regress toward mean somewhat
+        if (eraRecent < 2.00) pitchingFactor = 1.18;      // Historically elite (reduced from 1.35)
+        else if (eraRecent < 2.50) pitchingFactor = 1.14; 
+        else if (eraRecent < 3.00) pitchingFactor = 1.10;
+        else if (eraRecent < 3.50) pitchingFactor = 1.05;
+        else if (eraRecent < 4.00) pitchingFactor = 1.00;
+        else if (eraRecent < 4.50) pitchingFactor = 0.95;
+        else if (eraRecent > 5.50) pitchingFactor = 0.85;
+        else if (eraRecent > 5.00) pitchingFactor = 0.90;
         
-        // K/9 bonus
-        if (k9Recent > 11.0) pitchingFactor += 0.08;
-        else if (k9Recent > 9.5) pitchingFactor += 0.04;
+        // K/9 bonus (reduced)
+        if (k9Recent > 11.0) pitchingFactor += 0.04;
+        else if (k9Recent > 9.5) pitchingFactor += 0.02;
     }
 
     return { powerFactor, contactFactor, pitchingFactor };
@@ -508,21 +517,21 @@ const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, r
         }
     }
 
-    // HIT PROBABILITY TUNING - Calibrated for realistic ERA (4.20-4.50 league avg)
-    // Target: .240-.250 league AVG, .310-.315 OBP
-    // KEY FIX: Previous values were too low, causing unrealistically low ERA
-    // MLB league BABIP is ~.300, so hit prob on ball in play should be ~30%
-    let hitProb = 0.288 + ((effectiveContact - effectiveStuff) * 0.0024) + (fatiguePenalty * 0.008);
+    // HIT PROBABILITY TUNING - Calibrated for realistic ERA (4.00-4.50 league avg)
+    // Target: .250-.260 league AVG, .320-.330 OBP
+    // BABIP should be ~.300, meaning ~30% of balls in play become hits
+    let hitProb = 0.298 + ((effectiveContact - effectiveStuff) * 0.0028) + (fatiguePenalty * 0.012);
     
-    // Apply historical factors with caps to prevent extremes
-    const cappedContactFactor = Math.min(batterHist.contactFactor, 1.20);
-    if (cappedContactFactor > 1.1) hitProb += 0.014;
-    if (cappedContactFactor > 1.15) hitProb += 0.010;
+    // Apply historical factors - allow stronger impact for proven hitters
+    const cappedContactFactor = Math.min(batterHist.contactFactor, 1.30);
+    if (cappedContactFactor > 1.20) hitProb += 0.025;  // Elite hitters get real advantage
+    else if (cappedContactFactor > 1.10) hitProb += 0.018;
+    else if (cappedContactFactor > 1.05) hitProb += 0.010;
     
-    // Pitcher penalties - elite pitchers still suppress hits but more modestly
-    if (pitcherHist.pitchingFactor > 1.1) hitProb -= 0.020;
-    if (pitcherHist.pitchingFactor > 1.2) hitProb -= 0.015;
-    if (pitcherHist.pitchingFactor > 1.3) hitProb -= 0.010;
+    // Pitcher effectiveness - reduce impact so ERA is more realistic
+    if (pitcherHist.pitchingFactor > 1.25) hitProb -= 0.018;  // Reduced from 0.045
+    else if (pitcherHist.pitchingFactor > 1.15) hitProb -= 0.012;
+    else if (pitcherHist.pitchingFactor > 1.05) hitProb -= 0.006;
     
     const park = parkFactors || { run: 100, hr: 100, babip: 100 };
     const runAdj = park.run / 100;
@@ -689,13 +698,18 @@ const getReliever = (team: Team, usedIds: Set<string>, role: 'Closer' | 'Setup' 
         if (p.daysRest < 0) return false;
         if (p.rotationSlot < 9) return false; // Not a reliever
         
-        // WORKLOAD LIMIT: Relievers max out at ~80 IP/season, typical is 50-70 IP
-        // This prevents relievers from accumulating 200+ IP
-        const currentIP = p.pitching?.ip || 0;
-        const maxSeasonIP = p.rotationSlot === 9 ? 75 : 80; // Closers get fewer innings (high leverage only)
+        // WORKLOAD LIMIT: Relievers max out at ~70 IP/season (typical is 50-65 IP)
+        // Use statsCounters which is always updated, not pitching.ip which may lag
+        const currentIP = (p.statsCounters?.outsPitched || 0) / 3;
+        const maxSeasonIP = p.rotationSlot === 9 ? 65 : 70; // Closers: 65 IP max, others: 70 IP max
         if (currentIP >= maxSeasonIP) return false;
         
-        // Rest requirements: Closers need 1 day, others need 0 but prefer rested arms
+        // Games pitched limit: Relievers typically appear in 60-75 games max
+        const gamesThisSeason = p.statsCounters?.gp || 0;
+        const maxGames = p.rotationSlot === 9 ? 65 : 75;
+        if (gamesThisSeason >= maxGames) return false;
+        
+        // Rest requirements: Closers need 1 day, setup men need rest after heavy use
         if (p.rotationSlot === 9 && p.daysRest < 1) return false;
         
         return true;
@@ -727,9 +741,11 @@ const getReliever = (team: Team, usedIds: Set<string>, role: 'Closer' | 'Setup' 
     const getRelieverScore = (p: Player): number => {
         let historicalScore = 0;
         
-        // Penalize overworked pitchers (IP-based fatigue)
-        const currentIP = p.pitching?.ip || 0;
-        const workloadPenalty = currentIP > 50 ? (currentIP - 50) * 2 : 0;
+        // Penalize overworked pitchers (IP-based fatigue) - use statsCounters for accuracy
+        const currentIP = (p.statsCounters?.outsPitched || 0) / 3;
+        const gamesThisSeason = p.statsCounters?.gp || 0;
+        // Heavy workload penalty to spread innings across bullpen
+        const workloadPenalty = (currentIP > 40 ? (currentIP - 40) * 3 : 0) + (gamesThisSeason > 50 ? (gamesThisSeason - 50) * 2 : 0);
         
         if (p.history && p.history.length > 0) {
             const recentPitching = p.history.filter(h => 
@@ -756,10 +772,11 @@ const getReliever = (team: Team, usedIds: Set<string>, role: 'Closer' | 'Setup' 
             }
         }
         
-        // Combine: 40% historical, 25% rating, 20% rest, 15% workload management
+        // Combine: 35% historical, 25% rating, 20% rest, 20% workload management
         const restScore = Math.min(p.daysRest, 3) * 15; // Cap rest bonus at 3 days
-        const workloadBonus = Math.max(0, 50 - (p.pitching?.ip || 0)); // Fresh arms get bonus
-        return (historicalScore * 0.40) + (p.rating * 0.25) + (restScore * 0.20) + (workloadBonus * 0.15) - workloadPenalty;
+        const currentIPForBonus = (p.statsCounters?.outsPitched || 0) / 3;
+        const workloadBonus = Math.max(0, 50 - currentIPForBonus) * 1.5; // Fresh arms get bigger bonus
+        return (historicalScore * 0.35) + (p.rating * 0.25) + (restScore * 0.20) + (workloadBonus * 0.20) - workloadPenalty;
     };
 
     return pitchers.sort((a, b) => getRelieverScore(b) - getRelieverScore(a))[0];
@@ -902,8 +919,8 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
   gamePitcherStats.set(homePitcher.id, { pitches: 0, runs: 0, startInning: 1, enterScoreDiff: 0, inheritedRunners: 0, inheritedScored: 0 });
   gamePitcherStats.set(awayPitcher.id, { pitches: 0, runs: 0, startInning: 1, enterScoreDiff: 0, inheritedRunners: 0, inheritedScored: 0 });
 
-  recordStat(homePitcher, s => { s.gs++; s.gp++; });
-  recordStat(awayPitcher, s => { s.gs++; s.gp++; });
+  recordStat(homePitcher, s => { s.gs++; if (s.gp < 162) s.gp++; });
+  recordStat(awayPitcher, s => { s.gs++; if (s.gp < 162) s.gp++; });
 
   log.push({ description: `Starters: ${awayPitcher.name} (Away) vs ${homePitcher.name} (Home)`, type: 'info', inning: 0, isTop: true });
 
@@ -911,16 +928,23 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
   const batIdx = { home: 0, away: 0 };
   
   // Track games played for all hitters in the lineup
+  // CAP at 162 games max per player (MLB season limit)
   const playersInGame = new Set<string>();
   lineups.home.forEach(p => {
     if (!playersInGame.has(p.id)) {
-      recordStat(p, s => s.g++);
+      // Only increment games if under 162 game cap
+      if ((p.statsCounters?.g || 0) < 162) {
+        recordStat(p, s => s.g++);
+      }
       playersInGame.add(p.id);
     }
   });
   lineups.away.forEach(p => {
     if (!playersInGame.has(p.id)) {
-      recordStat(p, s => s.g++);
+      // Only increment games if under 162 game cap
+      if ((p.statsCounters?.g || 0) < 162) {
+        recordStat(p, s => s.g++);
+      }
       playersInGame.add(p.id);
     }
   });
@@ -995,7 +1019,8 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
               homePitcher = newP;
               usedPitchers.add(homePitcher.id);
               homePitcherOrder.push(homePitcher.id);
-              recordStat(homePitcher, s => { s.ir += 0; s.gp++; }); // Track games pitched for reliever
+              // Cap games pitched at 162
+              recordStat(homePitcher, s => { s.ir += 0; if (s.gp < 162) s.gp++; });
               gamePitcherStats.set(homePitcher.id, { pitches: 0, runs: 0, startInning: currentInning, enterScoreDiff: hLead, inheritedRunners: 0, inheritedScored: 0 });
           }
       }
@@ -1277,7 +1302,8 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
               awayPitcher = newP;
               usedPitchers.add(awayPitcher.id);
               awayPitcherOrder.push(awayPitcher.id);
-              recordStat(awayPitcher, s => { s.ir += 0; s.gp++; }); // Track games pitched for reliever
+              // Cap games pitched at 162
+              recordStat(awayPitcher, s => { s.ir += 0; if (s.gp < 162) s.gp++; });
               gamePitcherStats.set(awayPitcher.id, { pitches: 0, runs: 0, startInning: currentInning, enterScoreDiff: aLead, inheritedRunners: 0, inheritedScored: 0 });
           }
       }
@@ -1566,7 +1592,9 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
     awayTeamId: away.id,
     homeScore,
     awayScore,
-    innings: (homeScore > awayScore && currentInning > 9) ? currentInning - 1 : (currentInning - 1),
+    // Innings: minimum 9, or actual innings played if extra innings
+    // currentInning is incremented AFTER each inning completes
+    innings: Math.max(9, currentInning - 1),
     winnerId: homeScore > awayScore ? home.id : away.id,
     played: true,
     isPostseason,
