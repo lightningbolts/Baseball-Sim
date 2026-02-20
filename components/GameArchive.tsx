@@ -1,6 +1,7 @@
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { GameResult, Team, BoxScorePlayer } from '../types';
+import { PitchReplayViewer } from './PitchReplayViewer';
 
 interface GameArchiveProps {
   schedule: GameResult[];
@@ -12,7 +13,7 @@ export const GameArchive: React.FC<GameArchiveProps> = ({ schedule, teams }) => 
   const [filterTeam, setFilterTeam] = useState<string>('all');
   const [filterType, setFilterType] = useState<'all' | 'regular' | 'postseason'>('all');
   const [page, setPage] = useState(0);
-  const [activeTab, setActiveTab] = useState<'log' | 'box'>('box');
+  const [activeTab, setActiveTab] = useState<'log' | 'box' | 'replay'>('box');
   const [expandedEventIndex, setExpandedEventIndex] = useState<number | null>(null);
   const ITEMS_PER_PAGE = 20;
 
@@ -34,6 +35,13 @@ export const GameArchive: React.FC<GameArchiveProps> = ({ schedule, teams }) => 
   const toggleEvent = (idx: number) => {
       setExpandedEventIndex(expandedEventIndex === idx ? null : idx);
   };
+
+  // Build a player-name lookup map from all team rosters for the replay viewer
+  const playerNames = useMemo(() => {
+    const map = new Map<string, string>();
+    teams.forEach(t => t.roster.forEach(p => map.set(p.id, p.name)));
+    return map;
+  }, [teams]);
 
   const renderBoxTable = (players: BoxScorePlayer[], isPitching: boolean) => (
       <table className="w-full text-xs text-left text-slate-300">
@@ -169,15 +177,45 @@ export const GameArchive: React.FC<GameArchiveProps> = ({ schedule, teams }) => 
          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
             <div className="bg-slate-900 w-full max-w-4xl max-h-[90vh] rounded-xl border border-slate-700 shadow-2xl overflow-hidden flex flex-col">
                <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-950">
-                  <div className="flex gap-4">
+                  <div className="flex gap-2">
                       <button onClick={() => setActiveTab('box')} className={`px-4 py-1 rounded font-bold text-sm ${activeTab === 'box' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'}`}>Box Score</button>
                       <button onClick={() => setActiveTab('log')} className={`px-4 py-1 rounded font-bold text-sm ${activeTab === 'log' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'}`}>Play-by-Play</button>
+                      <button
+                        onClick={() => setActiveTab('replay')}
+                        className={`px-4 py-1 rounded font-bold text-sm flex items-center gap-1.5 ${activeTab === 'replay' ? 'bg-violet-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                        title={!selectedGame?.replay ? 'Replay data not available for this game' : undefined}
+                      >
+                        <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+                          <circle cx="8" cy="8" r="6" />
+                          <circle cx="8" cy="8" r="2.5" fill="currentColor" stroke="none" />
+                        </svg>
+                        Pitch Replay
+                        {selectedGame?.replay && (
+                          <span className="text-xs font-normal bg-violet-500/30 rounded px-1">LIVE</span>
+                        )}
+                      </button>
                   </div>
                   <button onClick={() => setSelectedGame(null)} className="text-slate-400 hover:text-white text-xl">&times;</button>
                </div>
                
                <div className="p-4 overflow-y-auto custom-scrollbar bg-slate-900 flex-1">
-                  {activeTab === 'box' && selectedGame.boxScore ? (
+                  {activeTab === 'replay' && selectedGame.replay ? (
+                      <PitchReplayViewer
+                        replay={selectedGame.replay}
+                        playerNames={playerNames}
+                        homeTeamName={getTeam(selectedGame.homeTeamId)?.name ?? 'Home'}
+                        awayTeamName={getTeam(selectedGame.awayTeamId)?.name ?? 'Away'}
+                      />
+                  ) : activeTab === 'replay' ? (
+                      <div className="flex flex-col items-center justify-center py-16 text-slate-500 gap-3">
+                        <svg className="w-12 h-12 text-slate-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="M10 8l6 4-6 4V8z" fill="currentColor" stroke="none" />
+                        </svg>
+                        <p className="text-sm">Pitch replay data not available for this game.</p>
+                        <p className="text-xs text-slate-600">Replay is captured for all newly simulated games.</p>
+                      </div>
+                  ) : activeTab === 'box' && selectedGame.boxScore ? (
                       <>
                         {/* Line Score */}
                         {selectedGame.boxScore.lineScore && (

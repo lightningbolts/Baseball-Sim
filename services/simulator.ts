@@ -1,5 +1,5 @@
 
-import { Team, GameResult, GameEvent, Player, Position, PlayerHistoryEntry, PitchDetails, StatsCounters, BoxScore, BoxScorePlayer, LineScore } from "../types";
+import { Team, GameResult, GameEvent, Player, Position, PlayerHistoryEntry, PitchDetails, StatsCounters, BoxScore, BoxScorePlayer, LineScore, GameReplayData, ReplayEvent, ReplayVector3 } from "../types";
 
 // --- Historical Bias Logic ---
 // This weights recent seasons heavily to project player performance
@@ -26,8 +26,9 @@ const getHistoricalPerformance = (player: Player) => {
 
     recent.forEach((h, idx) => {
         const yearNum = parseInt(h.year as string, 10) || latestYear;
-        // Stronger recency weighting - 2025 data matters most
-        const recencyBoost = yearNum >= 2025 ? 1.50 : yearNum >= 2024 ? 1.30 : yearNum >= 2023 ? 1.10 : yearNum >= 2022 ? 0.95 : 0.75;
+        // Reduce recency boost for aging players: a great 2025 for a 36-year-old is an outlier, not the new norm
+        const agingReducer = player.age >= 36 ? 0.60 : player.age >= 34 ? 0.75 : player.age >= 32 ? 0.88 : 1.0;
+        const recencyBoost = (yearNum >= 2025 ? 1.50 : yearNum >= 2024 ? 1.30 : yearNum >= 2023 ? 1.10 : yearNum >= 2022 ? 0.95 : 0.75) * agingReducer;
         const decayWeight = Math.max(0.15, 0.80 - (idx * 0.15));
         const weight = recencyBoost * decayWeight;
 
@@ -84,19 +85,47 @@ const getHistoricalPerformance = (player: Player) => {
         else if (avgRecent > 0.250) contactFactor = Math.max(contactFactor, 1.05);
         else if (avgRecent < 0.210 && opsRecent < 0.650) contactFactor = 0.85;
         
-        // Age-based regression (significant decline after 32)
-        if (player.age >= 36) {
-            powerFactor *= 0.82;
-            contactFactor *= 0.84;
+        // Age-based regression - stronger penalties for aging players
+        // Old players with good recent seasons should not be projected forward at full value
+        if (player.age >= 38) {
+            powerFactor *= 0.68;
+            contactFactor *= 0.70;
+        } else if (player.age >= 36) {
+            powerFactor *= 0.76;  // Springer-type: significantly regress
+            contactFactor *= 0.78;
         } else if (player.age >= 34) {
-            powerFactor *= 0.88;
-            contactFactor *= 0.90;
+            powerFactor *= 0.84;
+            contactFactor *= 0.86;
         } else if (player.age >= 32) {
-            powerFactor *= 0.93;
-            contactFactor *= 0.94;
+            powerFactor *= 0.91;
+            contactFactor *= 0.92;
         } else if (player.age >= 30) {
-            powerFactor *= 0.97;
-            contactFactor *= 0.98;
+            powerFactor *= 0.96;
+            contactFactor *= 0.97;
+        }
+
+        // Young player development bonus - players improving toward peak
+        // Cal Raleigh at 27-28 should trend upward, not be held back by prior mediocre seasons
+        if (player.age <= 24) {
+            powerFactor *= 1.09;   // Prime development years
+            contactFactor *= 1.07;
+        } else if (player.age <= 26) {
+            powerFactor *= 1.06;
+            contactFactor *= 1.04;
+        } else if (player.age <= 28) {
+            powerFactor *= 1.03;   // Near peak, still improving
+            contactFactor *= 1.02;
+        }
+
+        // Detect ascending OPS trend for young/mid-prime players
+        if (player.age <= 29 && recent.length >= 2) {
+            const yr0 = recent[0];
+            const yr1 = recent[1];
+            if (yr0?.stats.ops && yr1?.stats.ops) {
+                const opsTrend = yr0.stats.ops - yr1.stats.ops;
+                if (opsTrend > 0.065) { powerFactor *= 1.07; contactFactor *= 1.05; }  // Strong breakout
+                else if (opsTrend > 0.030) { powerFactor *= 1.03; contactFactor *= 1.02; }  // Mild improvement
+            }
         }
     }
 
@@ -104,20 +133,20 @@ const getHistoricalPerformance = (player: Player) => {
         const eraRecent = totalERASum / (totalIP || 1);
         const k9Recent = totalK9Weighted / pitchWeightSum;
         
-        // Reduced pitching factor impact - prevents unrealistically low ERAs
-        // Elite pitchers should still regress toward mean somewhat
-        if (eraRecent < 2.00) pitchingFactor = 1.18;      // Historically elite (reduced from 1.35)
-        else if (eraRecent < 2.50) pitchingFactor = 1.14; 
-        else if (eraRecent < 3.00) pitchingFactor = 1.10;
-        else if (eraRecent < 3.50) pitchingFactor = 1.05;
+        // Pitching factor - lowered ceilings to prevent sub-2.00 ERA proliferation
+        // Only the truly legendary career stats warrant the highest bonus
+        if (eraRecent < 2.00) pitchingFactor = 1.12;      // Koufax/Kershaw tier
+        else if (eraRecent < 2.50) pitchingFactor = 1.08;
+        else if (eraRecent < 3.00) pitchingFactor = 1.05;
+        else if (eraRecent < 3.50) pitchingFactor = 1.02;
         else if (eraRecent < 4.00) pitchingFactor = 1.00;
-        else if (eraRecent < 4.50) pitchingFactor = 0.95;
-        else if (eraRecent > 5.50) pitchingFactor = 0.85;
-        else if (eraRecent > 5.00) pitchingFactor = 0.90;
+        else if (eraRecent < 4.50) pitchingFactor = 0.96;
+        else if (eraRecent > 5.50) pitchingFactor = 0.86;
+        else if (eraRecent > 5.00) pitchingFactor = 0.91;
         
-        // K/9 bonus (reduced)
-        if (k9Recent > 11.0) pitchingFactor += 0.04;
-        else if (k9Recent > 9.5) pitchingFactor += 0.02;
+        // K/9 bonus (small)
+        if (k9Recent > 11.0) pitchingFactor += 0.03;
+        else if (k9Recent > 9.5) pitchingFactor += 0.01;
     }
 
     return { powerFactor, contactFactor, pitchingFactor };
@@ -360,10 +389,10 @@ const updatePitcherStats = (player: Player, outcome: string, outsChange: number,
     player.seasonStats.era = p.era;
 };
 
-const updateDefense = (team: Team, position: Position, type: 'PO' | 'A' | 'E') => {
-    // Find the actual fielder currently playing at this position (rotationSlot 0 means actively playing in simulation context)
-    // For simulation simplicity, we assume best rated fielder at position is playing
-    const fielder = team.roster.filter(p => p.position === position).sort((a,b) => b.rating - a.rating)[0];
+const updateDefense = (team: Team, position: Position, type: 'PO' | 'A' | 'E', defensiveAlignment?: Player[]) => {
+    const alignedFielder = defensiveAlignment?.find(p => p.position === position);
+    const fallbackFielder = team.roster.filter(p => p.position === position).sort((a,b) => b.rating - a.rating)[0];
+    const fielder = alignedFielder || fallbackFielder;
 
     if (fielder) {
         if (!fielder.defense) fielder.defense = { fpct:0, drs:0, uzr:0, oaa:0, po:0, a:0, e:0, dp:0, rf9:0, chances: 0 };
@@ -453,14 +482,13 @@ const simulatePitch = (pitcher: Player, batter: Player, currentPitches: number):
     if (Math.random() < 0.005) return 'HBP'; 
     if (Math.random() < 0.004) return 'WP';
 
-    // Strike Zone Probability - calibrated for 4.20-4.50 league ERA
-    // MLB average BB/9 is ~3.3, which means ~8.5% of PA are walks
-    // Lower strike zone prob = more balls = higher BB rate = higher ERA
-    const strikeZoneProb = 0.44 + (effectiveControl * 0.0010);
+    // Strike Zone Probability - slightly raised to reduce excessive walk rates (WHIP fix)
+    // MLB average BB/9 ~3.2; higher base = fewer balls = fewer walks = lower WHIP
+    const strikeZoneProb = 0.46 + (effectiveControl * 0.0010);
     
     if (Math.random() > strikeZoneProb) {
         // Outside Zone
-        const chaseProb = 0.30 - (effectiveEye * 0.003);
+        const chaseProb = 0.28 - (effectiveEye * 0.003);
         if (Math.random() < chaseProb) {
              // Chased pitch - usually strike swinging
              return 'StrikeSwinging';
@@ -496,7 +524,7 @@ const simulatePitch = (pitcher: Player, batter: Player, currentPitches: number):
     return 'InPlay';
 };
 
-const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, runners: number[], currentPitches: number, parkFactors?: { run: number; hr: number; babip: number }): { result: string, type: string, desc: string, outs: number, runs: number, rbi: number, ev: number, la: number } => {
+const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, runners: number[], currentPitches: number, parkFactors?: { run: number; hr: number; babip: number }, defensiveAlignment?: Player[]): { result: string, type: string, desc: string, outs: number, runs: number, rbi: number, ev: number, la: number } => {
     const fatiguePenalty = getFatiguePenalty(pitcher, currentPitches);
     
     const batterHist = getHistoricalPerformance(batter);
@@ -513,8 +541,8 @@ const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, r
     // Check for Sac Bunt
     if (runners[0] === 1 && (runners[1] === 0 && runners[2] === 0) && effectivePower < 45) {
         if (Math.random() < 0.05) {
-            updateDefense(defenseTeam, Position.C, 'A'); 
-            updateDefense(defenseTeam, Position.TB, 'PO');
+            updateDefense(defenseTeam, Position.C, 'A', defensiveAlignment); 
+            updateDefense(defenseTeam, Position.TB, 'PO', defensiveAlignment);
             return { result: 'SAC', type: 'Out', desc: 'lays down a sacrifice bunt', outs: 1, runs: 0, rbi: 0, ev: 45, la: -15 };
         }
     }
@@ -530,10 +558,10 @@ const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, r
     else if (cappedContactFactor > 1.10) hitProb += 0.012;
     else if (cappedContactFactor > 1.05) hitProb += 0.006;
     
-    // Pitcher effectiveness - balanced impact for ERA differentiation
-    if (pitcherHist.pitchingFactor > 1.15) hitProb -= 0.025;  // Elite pitchers suppress hits
-    else if (pitcherHist.pitchingFactor > 1.10) hitProb -= 0.018;
-    else if (pitcherHist.pitchingFactor > 1.05) hitProb -= 0.010;
+    // Pitcher effectiveness - softer suppression to prevent sub-2.00 ERA proliferation
+    if (pitcherHist.pitchingFactor > 1.10) hitProb -= 0.016;  // Only truly elite pitchers get large bonus
+    else if (pitcherHist.pitchingFactor > 1.06) hitProb -= 0.010;
+    else if (pitcherHist.pitchingFactor > 1.02) hitProb -= 0.005;
     
     const park = parkFactors || { run: 100, hr: 100, babip: 100 };
     const runAdj = park.run / 100;
@@ -556,15 +584,15 @@ const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, r
         // Errors
         const errorProb = 0.015 - ((defRating - 50) * 0.0003);
         if (Math.random() < Math.max(0.001, errorProb)) {
-             updateDefense(defenseTeam, targetPos, 'E');
+             updateDefense(defenseTeam, targetPos, 'E', defensiveAlignment);
              return { result: 'E', type: 'error', desc: 'reaches on a fielding error', outs: 0, runs: 0, rbi: 0, ev, la };
         }
 
         if (isFly) {
-            updateDefense(defenseTeam, targetPos, 'PO');
+            updateDefense(defenseTeam, targetPos, 'PO', defensiveAlignment);
         } else {
-            updateDefense(defenseTeam, targetPos, 'A');
-            updateDefense(defenseTeam, Position.TB, 'PO');
+            updateDefense(defenseTeam, targetPos, 'A', defensiveAlignment);
+            updateDefense(defenseTeam, Position.TB, 'PO', defensiveAlignment);
         }
 
         // GIDP
@@ -585,20 +613,17 @@ const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, r
         return { result: 'OUT', type: 'Out', desc: isFly ? 'flies out' : 'grounds out', outs: 1, runs: 0, rbi: 0, ev, la };
     }
 
-    // HIT
-    // HR Rates: Calibrated for realistic ~45-55 HR leader
-    // MLB avg is ~1.1 HR/game per team, leaders hit 45-55 HRs max
-    let hrProb = 0.052 + ((effectivePower - effectiveStuff) * 0.0020);
-    
-    // Cap power factor bonus to prevent extreme HR seasons
-    const cappedPowerFactor = Math.min(batterHist.powerFactor, 1.30);
-    if (cappedPowerFactor > 1.25) hrProb += 0.018; 
-    else if (cappedPowerFactor > 1.15) hrProb += 0.012;
-    else if (cappedPowerFactor > 1.05) hrProb += 0.006;
+    // HIT - HR probability per hit
+    // Uses exponential powerFactor scaling to properly model elite HR hitters:
+    //   Cal Raleigh (powerFactor ~1.55): ~40-45% of hits are HR (~55-60 HR season)
+    //   Aaron Judge  (powerFactor ~1.45): ~30-37% of hits are HR (~55-58 HR season)
+    //   Good power   (powerFactor ~1.20): ~11-15% of hits are HR (~18-22 HR season)
+    //   League avg   (powerFactor ~1.00):  ~4%    of hits are HR  (~5-9 HR season)
+    let hrProb = 0.040 + ((effectivePower - effectiveStuff) * 0.0024);
+    // Apply powerFactor as exponential multiplier (uncapped) — elite HR hitters get huge bonus
+    hrProb *= Math.pow(Math.max(0.65, batterHist.powerFactor), 2.8);
     hrProb *= (park.hr / 100);
-    
-    // Tighter cap: max ~14% HR rate on contact
-    hrProb = Math.max(0.022, Math.min(0.14, hrProb));
+    hrProb = Math.max(0.014, Math.min(0.56, hrProb));
 
     if (Math.random() < hrProb) {
         return { result: 'HR', type: 'Home Run', desc: 'crushes a home run!', outs: 0, runs: 1, rbi: 1, ev: 105, la: 28 };
@@ -739,6 +764,10 @@ const getReliever = (team: Team, usedIds: Set<string>, role: 'Closer' | 'Setup' 
         return team.roster.filter(p => !p.injury.isInjured && (p.position === Position.P || p.isTwoWay) && !usedIds.has(p.id)).sort((a,b) => b.daysRest - a.daysRest)[0] || null;
     }
 
+    const absDiff = Math.abs(scoreDiff);
+    const highLeverage = role === 'Closer' || role === 'Setup' || (inning >= 7 && absDiff <= 2);
+    const lowLeverage = role === 'Long' || absDiff >= 5;
+
     // Calculate reliever score based on HISTORICAL usage + rating + rest + workload
     // This ensures established relievers get more work than unknown guys
     const getRelieverScore = (p: Player): number => {
@@ -779,10 +808,29 @@ const getReliever = (team: Team, usedIds: Set<string>, role: 'Closer' | 'Setup' 
         const restScore = Math.min(p.daysRest, 3) * 15; // Cap rest bonus at 3 days
         const currentIPForBonus = (p.statsCounters?.outsPitched || 0) / 3;
         const workloadBonus = Math.max(0, 50 - currentIPForBonus) * 1.5; // Fresh arms get bigger bonus
-        return (historicalScore * 0.35) + (p.rating * 0.25) + (restScore * 0.20) + (workloadBonus * 0.20) - workloadPenalty;
+
+        let leverageAdjustment = 0;
+        const relieverTier = p.rotationSlot; // 9 closer, 10-11 setup, 12+ middle/long
+        if (highLeverage) {
+            if (relieverTier <= 11) leverageAdjustment += 35;
+            else leverageAdjustment -= 15;
+        } else if (lowLeverage) {
+            if (relieverTier <= 10) leverageAdjustment -= 45;
+            else if (relieverTier === 11) leverageAdjustment -= 20;
+            else leverageAdjustment += 25;
+        }
+
+        return (historicalScore * 0.35) + (p.rating * 0.25) + (restScore * 0.20) + (workloadBonus * 0.20) - workloadPenalty + leverageAdjustment;
     };
 
-    return pitchers.sort((a, b) => getRelieverScore(b) - getRelieverScore(a))[0];
+    const ordered = [...pitchers].sort((a, b) => getRelieverScore(b) - getRelieverScore(a));
+
+    if (lowLeverage) {
+        const lowLevCandidates = ordered.filter(p => p.rotationSlot >= 11);
+        if (lowLevCandidates.length > 0) return lowLevCandidates[0];
+    }
+
+    return ordered[0];
 };
 
 const getStarter = (team: Team): Player => {
@@ -842,14 +890,73 @@ const generatePitchMeta = (pitcher: Player, result: string): { type: string, spe
     return { type, speed: Math.round(speed), desc: `${Math.round(speed)}mph ${type}` };
 };
 
-export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = false): GameResult => {
+export interface SimulateGameOptions {
+    seed?: number;
+    captureReplay?: boolean;
+}
+
+const createSeededRandom = (seed: number): (() => number) => {
+    let state = (seed >>> 0) || 1;
+    return () => {
+        state += 0x6D2B79F5;
+        let value = Math.imul(state ^ (state >>> 15), 1 | state);
+        value ^= value + Math.imul(value ^ (value >>> 7), 61 | value);
+        return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+    };
+};
+
+const buildPitchPath = (pitchType: string, speed: number): { releasePoint: ReplayVector3; platePoint: ReplayVector3; ballPath: ReplayVector3[] } => {
+    const speedNorm = Math.max(0, Math.min(1, (speed - 70) / 35));
+    const breakSide = pitchType.toLowerCase().includes('slider') || pitchType.toLowerCase().includes('curve') ? -0.35 : pitchType.toLowerCase().includes('change') ? 0.12 : -0.08;
+    const drop = pitchType.toLowerCase().includes('curve') ? -0.9 : pitchType.toLowerCase().includes('change') ? -0.5 : -0.25;
+    const releasePoint = { x: 0.5, y: 1.9, z: 54 };
+    const platePoint = { x: breakSide * (1 - speedNorm * 0.25), y: 2.4 + drop * 0.3, z: 1.4 };
+    const ballPath: ReplayVector3[] = [];
+    const points = 10;
+    for (let i = 0; i <= points; i++) {
+        const t = i / points;
+        ballPath.push({
+            x: releasePoint.x + (platePoint.x - releasePoint.x) * t,
+            y: releasePoint.y + (platePoint.y - releasePoint.y) * t,
+            z: releasePoint.z + (platePoint.z - releasePoint.z) * t
+        });
+    }
+    return { releasePoint, platePoint, ballPath };
+};
+
+export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = false, options: SimulateGameOptions = {}): GameResult => {
+    const gameSeed = options.seed ?? ((Date.now() ^ (home.mlbId << 7) ^ (away.mlbId << 15)) >>> 0);
+    const seededRandom = createSeededRandom(gameSeed);
+    const originalMathRandom = Math.random;
+    Math.random = seededRandom;
+
+    const replayEnabled = options.captureReplay ?? true;
+    const replayEvents: ReplayEvent[] = [];
+
+    const serializeRunners = (bases: (Player | null)[]) => {
+        const runners: { playerId: string; base: 1 | 2 | 3 }[] = [];
+        for (let i = 0; i < bases.length; i++) {
+            const runner = bases[i];
+            if (runner) runners.push({ playerId: runner.id, base: (i + 1) as 1 | 2 | 3 });
+        }
+        return runners;
+    };
+
+    const pushReplayAction = (payload: Extract<ReplayEvent, { kind: 'action' }>) => {
+        if (!replayEnabled) return;
+        replayEvents.push(payload);
+    };
+
   const log: GameEvent[] = [];
   let homeScore = 0;
   let awayScore = 0;
   let currentInning = 1;
   let gameOver = false;
 
-  const usedPitchers = new Set<string>();
+    const usedPitchers = {
+        home: new Set<string>(),
+        away: new Set<string>()
+    };
   // Store pitchers in order of appearance
   const homePitcherOrder: string[] = [];
   const awayPitcherOrder: string[] = [];
@@ -857,6 +964,7 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
   const gamePitcherStats = new Map<string, { pitches: number, runs: number, startInning: number, enterScoreDiff: number, inheritedRunners: number, inheritedScored: number }>();
   
   const gameStats = new Map<string, StatsCounters>();
+    const playerById = new Map<string, Player>([...home.roster, ...away.roster].map(p => [p.id, p]));
   const getGameStats = (p: Player) => {
       if (!gameStats.has(p.id)) {
           gameStats.set(p.id, { 
@@ -911,11 +1019,13 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
       }
   };
 
-  let homePitcher = getStarter(home);
-  let awayPitcher = getStarter(away);
+    let homePitcher = getStarter(home);
+    let awayPitcher = getStarter(away);
+    const homeStarter = homePitcher;
+    const awayStarter = awayPitcher;
 
-  usedPitchers.add(homePitcher.id);
-  usedPitchers.add(awayPitcher.id);
+    usedPitchers.home.add(homePitcher.id);
+    usedPitchers.away.add(awayPitcher.id);
   homePitcherOrder.push(homePitcher.id);
   awayPitcherOrder.push(awayPitcher.id);
   
@@ -927,7 +1037,14 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
 
   log.push({ description: `Starters: ${awayPitcher.name} (Away) vs ${homePitcher.name} (Home)`, type: 'info', inning: 0, isTop: true });
 
-  const lineups = { home: getBestLineup(home), away: getBestLineup(away) };
+    const lineups = { home: getBestLineup(home), away: getBestLineup(away) };
+    const benches = {
+        home: home.roster.filter(p => !p.injury.isInjured && (p.position !== Position.P || p.isTwoWay) && !lineups.home.some(lp => lp.id === p.id)).sort((a, b) => b.rating - a.rating),
+        away: away.roster.filter(p => !p.injury.isInjured && (p.position !== Position.P || p.isTwoWay) && !lineups.away.some(lp => lp.id === p.id)).sort((a, b) => b.rating - a.rating)
+    };
+
+    let winCandidate: Player | null = null;
+    let lossCandidate: Player | null = null;
   const batIdx = { home: 0, away: 0 };
   
   // Track games played for all hitters in the lineup
@@ -951,6 +1068,129 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
       playersInGame.add(p.id);
     }
   });
+
+  const getLeader = (h: number, a: number): 'home' | 'away' | 'tie' => {
+      if (h === a) return 'tie';
+      return h > a ? 'home' : 'away';
+  };
+
+  const registerLeadChange = (
+      previousHome: number,
+      previousAway: number,
+      nextHome: number,
+      nextAway: number,
+      battingSide: 'home' | 'away'
+  ) => {
+      const before = getLeader(previousHome, previousAway);
+      const after = getLeader(nextHome, nextAway);
+      if (before === after || after === 'tie' || after !== battingSide) return;
+
+      if (after === 'home') {
+          winCandidate = homePitcher;
+          lossCandidate = awayPitcher;
+      } else {
+          winCandidate = awayPitcher;
+          lossCandidate = homePitcher;
+      }
+  };
+
+  const replaceLineupSpot = (side: 'home' | 'away', lineupIndex: number, player: Player, reason: string, inning: number, isTop: boolean) => {
+      const prev = lineups[side][lineupIndex];
+      if (!prev || prev.id === player.id) return;
+      lineups[side][lineupIndex] = player;
+      benches[side] = benches[side].filter(p => p.id !== player.id);
+      const description = `${side === 'home' ? 'Home' : 'Away'} substitution: ${player.name} replaces ${prev.name} (${reason})`;
+      log.push({ description, type: 'info', inning, isTop });
+      pushReplayAction({ kind: 'action', inning, isTop, type: 'substitution', description, batterId: player.id });
+      if (!playersInGame.has(player.id) && (player.statsCounters?.g || 0) < 162) {
+          recordStat(player, s => s.g++);
+          playersInGame.add(player.id);
+      }
+  };
+
+  const maybeDefensiveReplacement = (side: 'home' | 'away', inning: number, scoreDiff: number, isTop: boolean) => {
+      if (inning < 8) return;
+      if (side === 'home' && scoreDiff <= 0) return;
+      if (side === 'away' && scoreDiff >= 0) return;
+
+      const lineup = lineups[side];
+      const bench = benches[side];
+      if (bench.length === 0) return;
+
+      let weakestIndex = -1;
+      let weakestDefense = 999;
+      for (let i = 0; i < lineup.length; i++) {
+          const value = (lineup[i].attributes.defense || 50) + (lineup[i].attributes.reaction || 50);
+          if (value < weakestDefense) {
+              weakestDefense = value;
+              weakestIndex = i;
+          }
+      }
+      if (weakestIndex < 0) return;
+
+      const target = lineup[weakestIndex];
+      const defender = bench
+          .filter(p => p.position === target.position)
+          .sort((a, b) => ((b.attributes.defense + b.attributes.reaction) - (a.attributes.defense + a.attributes.reaction)))[0]
+          || bench.sort((a, b) => ((b.attributes.defense + b.attributes.reaction) - (a.attributes.defense + a.attributes.reaction)))[0];
+
+      if (!defender) return;
+      const currentDef = (target.attributes.defense || 50) + (target.attributes.reaction || 50);
+      const newDef = (defender.attributes.defense || 50) + (defender.attributes.reaction || 50);
+      if (newDef - currentDef < 8) return;
+
+      replaceLineupSpot(side, weakestIndex, defender, 'defensive replacement', inning, isTop);
+  };
+
+  const maybePinchHitter = (side: 'home' | 'away', inning: number, outs: number, scoreDiff: number, lineupIndex: number, isTop: boolean): Player | null => {
+      if (inning < 7 || outs >= 3) return null;
+      if (Math.abs(scoreDiff) > 3) return null;
+      const lineup = lineups[side];
+      const batter = lineup[lineupIndex];
+      const bench = benches[side];
+      if (!batter || bench.length === 0) return null;
+
+      const batterScore = batter.rating + batter.attributes.contact + batter.attributes.power + batter.attributes.eye;
+      const upgrade = bench
+          .filter(p => p.position !== Position.P)
+          .sort((a, b) => ((b.rating + b.attributes.contact + b.attributes.power + b.attributes.eye) - (a.rating + a.attributes.contact + a.attributes.power + a.attributes.eye)))[0];
+
+      if (!upgrade) return null;
+      const upgradeScore = upgrade.rating + upgrade.attributes.contact + upgrade.attributes.power + upgrade.attributes.eye;
+      if (upgradeScore - batterScore < 20) return null;
+      if (Math.random() > 0.35) return null;
+
+      replaceLineupSpot(side, lineupIndex, upgrade, 'pinch hitter', inning, isTop);
+      return upgrade;
+  };
+
+  const maybePinchRunner = (side: 'home' | 'away', bases: (Player | null)[], inning: number, scoreDiff: number, isTop: boolean) => {
+      if (inning < 7 || Math.abs(scoreDiff) > 3) return;
+      const bench = benches[side];
+      if (bench.length === 0) return;
+
+      const candidateBase = bases[1] ? 1 : (bases[0] ? 0 : -1);
+      if (candidateBase < 0) return;
+
+      const runner = bases[candidateBase];
+      if (!runner) return;
+      if ((runner.attributes.speed || 50) >= 60) return;
+
+      const pinchRunner = bench
+          .filter(p => p.position !== Position.P && p.id !== runner.id)
+          .sort((a, b) => (b.attributes.speed - a.attributes.speed))[0];
+      if (!pinchRunner) return;
+      if (pinchRunner.attributes.speed - (runner.attributes.speed || 50) < 20) return;
+
+      const lineupIndex = lineups[side].findIndex(p => p.id === runner.id);
+      if (lineupIndex >= 0) {
+          replaceLineupSpot(side, lineupIndex, pinchRunner, 'pinch runner', inning, isTop);
+      }
+      bases[candidateBase] = pinchRunner;
+      const description = `${pinchRunner.name} pinch-runs for ${runner.name}`;
+      log.push({ description, type: 'info', inning, isTop });
+      pushReplayAction({ kind: 'action', inning, isTop, type: 'substitution', description, batterId: pinchRunner.id });
+  };
   
   const lineScore: LineScore = {
       innings: [],
@@ -1016,11 +1256,13 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
     }
 
       if (needReliever) {
-          const newP = getReliever(home, usedPitchers, role, currentInning, hLead);
+          const newP = getReliever(home, usedPitchers.home, role, currentInning, hLead);
           if (newP) {
-              log.push({ description: `Pitching Change: ${newP.name} replaces ${homePitcher.name}`, type: 'info', inning: currentInning, isTop: true });
+              const description = `Pitching Change: ${newP.name} replaces ${homePitcher.name}`;
+              log.push({ description, type: 'info', inning: currentInning, isTop: true });
+              pushReplayAction({ kind: 'action', inning: currentInning, isTop: true, type: 'substitution', description, pitcherId: newP.id });
               homePitcher = newP;
-              usedPitchers.add(homePitcher.id);
+              usedPitchers.home.add(homePitcher.id);
               homePitcherOrder.push(homePitcher.id);
               // Cap games pitched at 162
               recordStat(homePitcher, s => { s.ir += 0; if (s.gp < 162) s.gp++; });
@@ -1030,9 +1272,12 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
 
       let outs = 0;
       let bases = [null, null, null] as (Player | null)[];
+      maybeDefensiveReplacement('home', currentInning, hLead, true);
       
       while (outs < 3) {
-          const batter = lineups.away[batIdx.away % lineups.away.length];
+          const lineupIndex = batIdx.away % lineups.away.length;
+          const pinch = maybePinchHitter('away', currentInning, outs, awayScore - homeScore, lineupIndex, true);
+          const batter = pinch || lineups.away[lineupIndex];
           batIdx.away++;
 
           // Steal Logic
@@ -1054,8 +1299,8 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
                      bases[0] = null;
                      outs++;
                      recordStat(runner, s => s.cs++);
-                     updateDefense(home, Position.C, 'A');
-                     updateDefense(home, Position.SB, 'PO');
+                     updateDefense(home, Position.C, 'A', lineups.home);
+                     updateDefense(home, Position.SB, 'PO', lineups.home);
                      log.push({ description: `${runner.name} caught stealing 2nd!`, type: 'out', inning: currentInning, isTop: true });
                      if (outs >= 3) break;
                  }
@@ -1075,6 +1320,7 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
                   const currentTotalPitches = hpS.pitches + pitchCount;
                   const pitch = simulatePitch(homePitcher, batter, currentTotalPitches);
                   const meta = generatePitchMeta(homePitcher, pitch);
+                  const beforeCount = `${balls}-${Math.min(2, strikes)}`;
                   
                   let pitchDesc = "";
                   if (pitch === 'Ball') {
@@ -1096,7 +1342,7 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
                   } else if (pitch === 'InPlay') {
                       pitchDesc = "In Play";
                       const runnersState = [bases[0]?1:0, bases[1]?1:0, bases[2]?1:0];
-                      abResult = resolveBallInPlay(homePitcher, batter, home, runnersState, currentTotalPitches, home.parkFactors);
+                      abResult = resolveBallInPlay(homePitcher, batter, home, runnersState, currentTotalPitches, home.parkFactors, lineups.home);
                   }
 
                   pitchSequence.push({
@@ -1105,6 +1351,27 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
                       description: meta.desc,
                       count: `${balls}-${strikes >= 3 ? 2 : strikes}` 
                   });
+
+                  if (replayEnabled) {
+                      const trajectory = buildPitchPath(meta.type, meta.speed);
+                      replayEvents.push({
+                          kind: 'pitch',
+                          inning: currentInning,
+                          isTop: true,
+                          batterId: batter.id,
+                          pitcherId: homePitcher.id,
+                          pitchNumberInPA: pitchCount,
+                          countBefore: beforeCount,
+                          countAfter: `${balls}-${Math.min(2, strikes)}`,
+                          result: pitchDesc,
+                          pitchType: meta.type,
+                          speed: meta.speed,
+                          releasePoint: trajectory.releasePoint,
+                          platePoint: trajectory.platePoint,
+                          ballPath: trajectory.ballPath,
+                          runners: serializeRunners(bases)
+                      });
+                  }
               }
           }
           
@@ -1229,12 +1496,20 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
                   bases[2] = runnerFromFirst ? runnerFromFirst : null;
                   bases[1] = batter;
               }
-              else if (hitType === '1B') { 
-                  newRuns = (bases[2]?1:0); 
-                  if(bases[2]) recordStat(bases[2], s=>s.r++); 
-                  if(bases[1]) bases[2]=bases[1]; 
-                  if(bases[0]) bases[1]=bases[0]; 
-                  bases[0]=batter; 
+              else if (hitType === '1B') {
+                  // Runner on 3rd always scores on a single
+                  if (bases[2]) { newRuns++; recordStat(bases[2], s => s.r++); bases[2] = null; }
+                  // Runner on 2nd scores ~52-68% of the time on a single (speed-dependent)
+                  // In real MLB, a runner on 2nd scores on ~60% of singles to the outfield
+                  if (bases[1]) {
+                      const runnerOn2nd = bases[1];
+                      const scoreFrom2nd = Math.max(0.38, Math.min(0.72, 0.52 + ((runnerOn2nd.attributes.speed || 50) - 50) * 0.004));
+                      if (Math.random() < scoreFrom2nd) { newRuns++; recordStat(runnerOn2nd, s => s.r++); bases[2] = null; }
+                      else { bases[2] = runnerOn2nd; }
+                      bases[1] = null;
+                  }
+                  if (bases[0]) { bases[1] = bases[0]; bases[0] = null; }
+                  bases[0] = batter;
               }
               
               runsThisPlay += newRuns;
@@ -1248,7 +1523,66 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
               log.push({ description: desc, type: 'hit', inning: currentInning, isTop: true, pitches: pitchSequence });
           }
           awayScore += runsThisPlay;
+          pushReplayAction({
+              kind: 'action',
+              inning: currentInning,
+              isTop: true,
+              type: 'plateAppearance',
+              description: `${batter.name} ${abResult.desc}`,
+              batterId: batter.id,
+              pitcherId: homePitcher.id,
+              runsScored: runsThisPlay
+          });
+          if (runsThisPlay > 0) {
+              pushReplayAction({
+                  kind: 'action',
+                  inning: currentInning,
+                  isTop: true,
+                  type: 'score',
+                  description: `Away scores ${runsThisPlay}`,
+                  batterId: batter.id,
+                  pitcherId: homePitcher.id,
+                  runsScored: runsThisPlay
+              });
+          }
+          registerLeadChange(homeScore, awayScore - runsThisPlay, homeScore, awayScore, 'away');
           inningScore.away += runsThisPlay;
+
+          maybePinchRunner('away', bases, currentInning, awayScore - homeScore, true);
+
+          const inningLead = homeScore - awayScore;
+          const currentHp = gamePitcherStats.get(homePitcher.id)!;
+          const relieverRole: 'Closer' | 'Setup' | 'Any' = currentInning >= 9 && inningLead > 0 && inningLead <= 3 ? 'Closer' : (currentInning >= 7 && Math.abs(inningLead) <= 3 ? 'Setup' : 'Any');
+          const shouldMidInningHook = outs < 3 && (
+              currentHp.pitches >= staminaLimit ||
+              (currentInning >= 7 && Math.abs(inningLead) <= 3 && currentHp.pitches >= staminaLimit * 0.85) ||
+              (currentHp.runs >= 3 && bases.filter(Boolean).length >= 1) ||
+              (bases.filter(Boolean).length >= 2 && currentInning >= 6)
+          );
+          if (shouldMidInningHook) {
+              const newP = getReliever(home, usedPitchers.home, relieverRole, currentInning, inningLead);
+              if (newP && newP.id !== homePitcher.id) {
+                  const inherited = bases.filter(Boolean).length;
+                  homePitcher = newP;
+                  usedPitchers.home.add(newP.id);
+                  homePitcherOrder.push(newP.id);
+                  recordStat(homePitcher, s => {
+                      if (s.gp < 162) s.gp++;
+                      s.ir += inherited;
+                  });
+                  gamePitcherStats.set(homePitcher.id, {
+                      pitches: 0,
+                      runs: 0,
+                      startInning: currentInning,
+                      enterScoreDiff: inningLead,
+                      inheritedRunners: inherited,
+                      inheritedScored: 0
+                  });
+                  const description = `Mid-inning pitching change: ${homePitcher.name} enters with ${inherited} on base`;
+                  log.push({ description, type: 'info', inning: currentInning, isTop: true });
+                  pushReplayAction({ kind: 'action', inning: currentInning, isTop: true, type: 'substitution', description, pitcherId: homePitcher.id });
+              }
+          }
       }
 
       if (currentInning >= 9 && homeScore > awayScore) { 
@@ -1305,11 +1639,13 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
     }
 
       if (needRelieverAway) {
-          const newP = getReliever(away, usedPitchers, roleAway, currentInning, aLead);
+          const newP = getReliever(away, usedPitchers.away, roleAway, currentInning, aLead);
           if (newP) {
-              log.push({ description: `Pitching Change: ${newP.name} replaces ${awayPitcher.name}`, type: 'info', inning: currentInning, isTop: false });
+              const description = `Pitching Change: ${newP.name} replaces ${awayPitcher.name}`;
+              log.push({ description, type: 'info', inning: currentInning, isTop: false });
+              pushReplayAction({ kind: 'action', inning: currentInning, isTop: false, type: 'substitution', description, pitcherId: newP.id });
               awayPitcher = newP;
-              usedPitchers.add(awayPitcher.id);
+              usedPitchers.away.add(awayPitcher.id);
               awayPitcherOrder.push(awayPitcher.id);
               // Cap games pitched at 162
               recordStat(awayPitcher, s => { s.ir += 0; if (s.gp < 162) s.gp++; });
@@ -1319,6 +1655,7 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
 
       outs = 0;
       bases = [null, null, null];
+    maybeDefensiveReplacement('away', currentInning, aLead, false);
       
       while (outs < 3) {
            // Walk-off check
@@ -1329,7 +1666,9 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
                break; 
            }
 
-           const batter = lineups.home[batIdx.home % lineups.home.length];
+           const lineupIndex = batIdx.home % lineups.home.length;
+           const pinch = maybePinchHitter('home', currentInning, outs, homeScore - awayScore, lineupIndex, false);
+           const batter = pinch || lineups.home[lineupIndex];
            batIdx.home++;
            
            if (bases[0] && !bases[1]) {
@@ -1348,8 +1687,8 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
                  } else {
                      bases[0] = null; outs++;
                      recordStat(runner, s => s.cs++);
-                     updateDefense(away, Position.C, 'A');
-                     updateDefense(away, Position.SB, 'PO');
+                     updateDefense(away, Position.C, 'A', lineups.away);
+                     updateDefense(away, Position.SB, 'PO', lineups.away);
                      log.push({ description: `${runner.name} caught stealing 2nd!`, type: 'out', inning: currentInning, isTop: false });
                      if (outs >= 3) break;
                  }
@@ -1368,6 +1707,7 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
                   const currentTotalPitches = apS.pitches + pitchCount;
                   const pitch = simulatePitch(awayPitcher, batter, currentTotalPitches);
                   const meta = generatePitchMeta(awayPitcher, pitch);
+                        const beforeCount = `${balls}-${Math.min(2, strikes)}`;
                   
                   let pitchDesc = "";
                   if (pitch === 'Ball') { 
@@ -1387,7 +1727,7 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
                   } else if (pitch === 'InPlay') { 
                       pitchDesc = "In Play";
                       const runnersState = [bases[0]?1:0, bases[1]?1:0, bases[2]?1:0];
-                      abResult = resolveBallInPlay(awayPitcher, batter, away, runnersState, currentTotalPitches, home.parkFactors); 
+                      abResult = resolveBallInPlay(awayPitcher, batter, away, runnersState, currentTotalPitches, home.parkFactors, lineups.away); 
                   }
 
                   pitchSequence.push({
@@ -1396,6 +1736,27 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
                       description: meta.desc,
                       count: `${balls}-${strikes >= 3 ? 2 : strikes}`
                   });
+
+                  if (replayEnabled) {
+                      const trajectory = buildPitchPath(meta.type, meta.speed);
+                      replayEvents.push({
+                          kind: 'pitch',
+                          inning: currentInning,
+                          isTop: false,
+                          batterId: batter.id,
+                          pitcherId: awayPitcher.id,
+                          pitchNumberInPA: pitchCount,
+                          countBefore: beforeCount,
+                          countAfter: `${balls}-${Math.min(2, strikes)}`,
+                          result: pitchDesc,
+                          pitchType: meta.type,
+                          speed: meta.speed,
+                          releasePoint: trajectory.releasePoint,
+                          platePoint: trajectory.platePoint,
+                          ballPath: trajectory.ballPath,
+                          runners: serializeRunners(bases)
+                      });
+                  }
                }
            }
            
@@ -1503,9 +1864,23 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
                   bases[2] = runnerFromFirst ? runnerFromFirst : null;
                   bases[1]=batter;
               }
-              else if (hitType === '1B') { newRuns = (bases[2]?1:0); if(bases[2]) recordStat(bases[2], s=>s.r++); if(bases[1]) bases[2]=bases[1]; if(bases[0]) bases[1]=bases[0]; bases[0]=batter; }
+              else if (hitType === '1B') {
+                  // Runner on 3rd always scores
+                  if (bases[2]) { newRuns++; recordStat(bases[2], s => s.r++); bases[2] = null; }
+                  // Runner on 2nd scores ~52-68% based on speed
+                  if (bases[1]) {
+                      const runnerOn2nd = bases[1];
+                      const scoreFrom2nd = Math.max(0.38, Math.min(0.72, 0.52 + ((runnerOn2nd.attributes.speed || 50) - 50) * 0.004));
+                      if (Math.random() < scoreFrom2nd) { newRuns++; recordStat(runnerOn2nd, s => s.r++); bases[2] = null; }
+                      else { bases[2] = runnerOn2nd; }
+                      bases[1] = null;
+                  }
+                  if (bases[0]) { bases[1] = bases[0]; bases[0] = null; }
+                  bases[0] = batter;
+              }
               
               runsThisPlay += newRuns;
+              registerLeadChange(homeScore, awayScore, homeScore + newRuns, awayScore, 'home');
               homeScore += newRuns;
               apS.runs += newRuns;
               
@@ -1517,6 +1892,66 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
               if (currentInning >= 9 && homeScore > awayScore) {
                   recordStat(batter, s => s.wo++);
               }
+           }
+           if (runsThisPlay > 0 && !['HR','3B','2B','1B'].includes(abResult.result)) {
+               registerLeadChange(homeScore - runsThisPlay, awayScore, homeScore, awayScore, 'home');
+           }
+           pushReplayAction({
+               kind: 'action',
+               inning: currentInning,
+               isTop: false,
+               type: 'plateAppearance',
+               description: `${batter.name} ${abResult.desc}`,
+               batterId: batter.id,
+               pitcherId: awayPitcher.id,
+               runsScored: runsThisPlay
+           });
+           if (runsThisPlay > 0) {
+               pushReplayAction({
+                   kind: 'action',
+                   inning: currentInning,
+                   isTop: false,
+                   type: 'score',
+                   description: `Home scores ${runsThisPlay}`,
+                   batterId: batter.id,
+                   pitcherId: awayPitcher.id,
+                   runsScored: runsThisPlay
+               });
+           }
+           maybePinchRunner('home', bases, currentInning, homeScore - awayScore, false);
+
+           const inningLeadAway = awayScore - homeScore;
+           const currentAp = gamePitcherStats.get(awayPitcher.id)!;
+           const relieverRoleAway: 'Closer' | 'Setup' | 'Any' = currentInning >= 9 && inningLeadAway > 0 && inningLeadAway <= 3 ? 'Closer' : (currentInning >= 7 && Math.abs(inningLeadAway) <= 3 ? 'Setup' : 'Any');
+           const shouldMidInningHookAway = outs < 3 && (
+               currentAp.pitches >= staminaLimitAway ||
+               (currentInning >= 7 && Math.abs(inningLeadAway) <= 3 && currentAp.pitches >= staminaLimitAway * 0.85) ||
+               (currentAp.runs >= 3 && bases.filter(Boolean).length >= 1) ||
+               (bases.filter(Boolean).length >= 2 && currentInning >= 6)
+           );
+           if (shouldMidInningHookAway) {
+               const newP = getReliever(away, usedPitchers.away, relieverRoleAway, currentInning, inningLeadAway);
+               if (newP && newP.id !== awayPitcher.id) {
+                   const inherited = bases.filter(Boolean).length;
+                   awayPitcher = newP;
+                   usedPitchers.away.add(newP.id);
+                   awayPitcherOrder.push(newP.id);
+                   recordStat(awayPitcher, s => {
+                       if (s.gp < 162) s.gp++;
+                       s.ir += inherited;
+                   });
+                   gamePitcherStats.set(awayPitcher.id, {
+                       pitches: 0,
+                       runs: 0,
+                       startInning: currentInning,
+                       enterScoreDiff: inningLeadAway,
+                       inheritedRunners: inherited,
+                       inheritedScored: 0
+                   });
+                   const description = `Mid-inning pitching change: ${awayPitcher.name} enters with ${inherited} on base`;
+                   log.push({ description, type: 'info', inning: currentInning, isTop: false });
+                   pushReplayAction({ kind: 'action', inning: currentInning, isTop: false, type: 'substitution', description, pitcherId: awayPitcher.id });
+               }
            }
            inningScore.home += runsThisPlay;
       }
@@ -1534,33 +1969,106 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
   lineScore.homeTotal = homeScore;
 
   // Final Updates
-  const homeStarter = home.roster.find(p => usedPitchers.has(p.id) && gamePitcherStats.get(p.id)!.startInning === 1)!;
-  const awayStarter = away.roster.find(p => usedPitchers.has(p.id) && gamePitcherStats.get(p.id)!.startInning === 1)!;
+  const winnerSide: 'home' | 'away' = homeScore > awayScore ? 'home' : 'away';
+  const loserSide: 'home' | 'away' = winnerSide === 'home' ? 'away' : 'home';
 
-  let winningPitcher: Player;
-  let losingPitcher: Player;
+  const winningStarter = winnerSide === 'home' ? homeStarter : awayStarter;
+  const winningCurrentPitcher = winnerSide === 'home' ? homePitcher : awayPitcher;
+  const losingCurrentPitcher = loserSide === 'home' ? homePitcher : awayPitcher;
+  const winningOrder = winnerSide === 'home' ? homePitcherOrder : awayPitcherOrder;
+  const losingOrder = loserSide === 'home' ? homePitcherOrder : awayPitcherOrder;
+
+  let winningPitcher = (winCandidate && ((winnerSide === 'home' && homePitcherOrder.includes(winCandidate.id)) || (winnerSide === 'away' && awayPitcherOrder.includes(winCandidate.id))))
+      ? winCandidate
+      : winningCurrentPitcher;
+
+  const winningStarterGameStats = getGameStats(winningStarter);
+  if (winningPitcher.id === winningStarter.id && winningStarterGameStats.outsPitched < 15) {
+      const fallbackReliever = winningOrder
+          .map(id => playerById.get(id))
+          .filter((p): p is Player => !!p && p.id !== winningStarter.id)
+          .filter(p => getGameStats(p).outsPitched > 0)
+          .sort((a, b) => {
+              const aStats = getGameStats(a);
+              const bStats = getGameStats(b);
+              const aScore = aStats.outsPitched - (aStats.er * 2) - (aStats.p_bb * 0.3);
+              const bScore = bStats.outsPitched - (bStats.er * 2) - (bStats.p_bb * 0.3);
+              return bScore - aScore;
+          })[0];
+      if (fallbackReliever) winningPitcher = fallbackReliever;
+  }
+
+  let losingPitcher = (lossCandidate && ((loserSide === 'home' && homePitcherOrder.includes(lossCandidate.id)) || (loserSide === 'away' && awayPitcherOrder.includes(lossCandidate.id))))
+      ? lossCandidate
+      : losingCurrentPitcher;
+
+  recordStat(winningPitcher, s => {
+      s.wins++;
+      if (winningPitcher.id !== winningStarter.id) s.rw++;
+  });
+  recordStat(losingPitcher, s => s.losses++);
+
+  const lastWinningPitcherId = winningOrder[winningOrder.length - 1];
+  const lastWinningPitcher = lastWinningPitcherId ? playerById.get(lastWinningPitcherId) || null : null;
+  const lastLosingPitcherId = losingOrder[losingOrder.length - 1];
+  const lastLosingPitcher = lastLosingPitcherId ? playerById.get(lastLosingPitcherId) || null : null;
+
+  if (lastWinningPitcher) recordStat(lastWinningPitcher, s => s.gf++);
+  if (lastLosingPitcher) recordStat(lastLosingPitcher, s => s.gf++);
+
   let savePitcher: Player | null = null;
-
-  if (homeScore > awayScore) {
-      winningPitcher = homeStarter.statsCounters.outsPitched >= 15 ? homeStarter : homePitcher;
-      losingPitcher = awayPitcher; 
-
-      if (homeScore - awayScore <= 3 && homePitcher.id !== homeStarter.id && homePitcher.trait === 'Closer') {
-          savePitcher = homePitcher;
-      }
-  } else {
-      winningPitcher = awayStarter.statsCounters.outsPitched >= 15 ? awayStarter : awayPitcher;
-      losingPitcher = homePitcher; 
-      if (awayScore - homeScore <= 3 && awayPitcher.id !== awayStarter.id && awayPitcher.trait === 'Closer') {
-          savePitcher = awayPitcher;
+  if (lastWinningPitcher && lastWinningPitcher.id !== winningPitcher.id) {
+      const gameState = gamePitcherStats.get(lastWinningPitcher.id);
+      const gs = getGameStats(lastWinningPitcher);
+      const enteredLead = gameState ? gameState.enterScoreDiff : 0;
+      const qualifiesSave = (
+          (enteredLead > 0 && enteredLead <= 3) ||
+          (enteredLead > 0 && (gameState?.inheritedRunners || 0) > 0) ||
+          gs.outsPitched >= 9
+      );
+      if (qualifiesSave) {
+          savePitcher = lastWinningPitcher;
+          recordStat(savePitcher, s => {
+              s.saves++;
+              s.svo++;
+          });
       }
   }
 
-  recordStat(winningPitcher, s => s.wins++);
-  recordStat(losingPitcher, s => s.losses++);
-  if (savePitcher) {
-      recordStat(savePitcher, s => s.saves++);
-      recordStat(savePitcher, s => s.gf++);
+  const savePitcherId = savePitcher?.id;
+  const holdCandidates = winningOrder
+      .slice(0, Math.max(0, winningOrder.length - 1))
+      .map(id => playerById.get(id))
+      .filter((p): p is Player => !!p)
+      .filter(p => p.id !== winningStarter.id && p.id !== winningPitcher.id && p.id !== savePitcherId);
+
+  for (const reliever of holdCandidates) {
+      const state = gamePitcherStats.get(reliever.id);
+      const gs = getGameStats(reliever);
+      if (!state || gs.outsPitched <= 0) continue;
+      if (state.enterScoreDiff <= 0) continue;
+      if (state.enterScoreDiff > 3) continue;
+      if (state.runs >= state.enterScoreDiff) continue;
+      recordStat(reliever, s => {
+          s.holds++;
+          s.svo++;
+      });
+  }
+
+  const allRelievers = [...homePitcherOrder, ...awayPitcherOrder]
+      .map(id => playerById.get(id))
+      .filter((p): p is Player => !!p)
+      .filter(p => p.id !== homeStarter.id && p.id !== awayStarter.id);
+
+  for (const reliever of allRelievers) {
+      const state = gamePitcherStats.get(reliever.id);
+      if (!state) continue;
+      if (state.enterScoreDiff > 0 && state.runs >= state.enterScoreDiff) {
+          recordStat(reliever, s => {
+              s.blownSaves++;
+              s.svo++;
+          });
+      }
   }
 
   // QS / CG / SHO Logic
@@ -1597,7 +2105,15 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
       updatePitcherStats(p, 'RECALC', 0, 0, 0);
   }));
 
-  return {
+    const replay: GameReplayData | undefined = replayEnabled
+            ? {
+                    schemaVersion: 'v1',
+                    seed: gameSeed,
+                    events: replayEvents
+                }
+            : undefined;
+
+    const result: GameResult = {
     id: `game_${Date.now()}_${Math.random()}`,
     date: date.toISOString(),
     homeTeamId: home.id,
@@ -1612,8 +2128,13 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
     isPostseason,
     log,
     boxScore,
+        replaySeed: gameSeed,
+        replay,
     stadium: home.stadium
   };
+
+    Math.random = originalMathRandom;
+    return result;
 };
 
 export const generateSchedule = (teams: Team[], startDate: Date): GameResult[] => {

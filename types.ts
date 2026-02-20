@@ -377,6 +377,54 @@ export interface BoxScore {
     lineScore: LineScore;
 }
 
+export interface ReplayVector3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface ReplayRunnerState {
+  playerId: string;
+  base: 1 | 2 | 3;
+}
+
+export interface ReplayPitchEvent {
+  kind: 'pitch';
+  inning: number;
+  isTop: boolean;
+  batterId: string;
+  pitcherId: string;
+  pitchNumberInPA: number;
+  countBefore: string;
+  countAfter: string;
+  result: string;
+  pitchType: string;
+  speed: number;
+  releasePoint: ReplayVector3;
+  platePoint: ReplayVector3;
+  ballPath: ReplayVector3[];
+  runners: ReplayRunnerState[];
+}
+
+export interface ReplayActionEvent {
+  kind: 'action';
+  inning: number;
+  isTop: boolean;
+  type: 'substitution' | 'plateAppearance' | 'score';
+  description: string;
+  batterId?: string;
+  pitcherId?: string;
+  runsScored?: number;
+}
+
+export type ReplayEvent = ReplayPitchEvent | ReplayActionEvent;
+
+export interface GameReplayData {
+  schemaVersion: 'v1';
+  seed: number;
+  events: ReplayEvent[];
+}
+
 export interface GameResult {
   id: string;
   date: string; 
@@ -391,6 +439,8 @@ export interface GameResult {
   seriesId?: string; 
   log: GameEvent[];
   boxScore?: BoxScore;
+  replaySeed?: number;
+  replay?: GameReplayData;
   stadium?: string;
 }
 
