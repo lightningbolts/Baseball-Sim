@@ -39,6 +39,9 @@ const App = () => {
   const [simSpeed, setSimSpeed] = useState(500); 
   const [autoInit, setAutoInit] = useState(false);
   const [fastSimResults, setFastSimResults] = useState<import('./services/fastSim').FastSimSummary | null>(null);
+  const [isBetweenRounds, setIsBetweenRounds] = useState(false);
+  const [completedRound, setCompletedRound] = useState<string | undefined>(undefined);
+  const [travelDaysRemaining, setTravelDaysRemaining] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -186,6 +189,78 @@ const App = () => {
      }));
   };
 
+  // Called when user clicks "Continue to next round" in postseason
+  const advanceRound = () => {
+    if (!season.postseason) return;
+    const roundOrder: Array<'Wild Card' | 'DS' | 'CS' | 'World Series'> = ['Wild Card', 'DS', 'CS', 'World Series'];
+    const currIdx = roundOrder.indexOf(season.postseason.round as typeof roundOrder[number]);
+    if (currIdx >= 3) return; // Already at WS or beyond
+    
+    const nextRound = roundOrder[currIdx + 1];
+    const currentBracket = [...season.postseason.bracket];
+    const newBracket = [...currentBracket];
+    
+    if (nextRound === 'DS') {
+        const alWC = currentBracket.filter(s => s.winnerId && season.teams.find(t => t.id === s.winnerId)?.league === 'AL');
+        const nlWC = currentBracket.filter(s => s.winnerId && season.teams.find(t => t.id === s.winnerId)?.league === 'NL');
+        const alTop = season.teams.filter(t => t.league === 'AL').sort((a,b) => b.wins - a.wins);
+        const nlTop = season.teams.filter(t => t.league === 'NL').sort((a,b) => b.wins - a.wins);
+        
+        if (alWC.length >= 2) {
+            newBracket.push({ id: `ds_al1`, round: 'DS', team1Id: alTop[0].id, team2Id: alWC[1].winnerId!, wins1: 0, wins2: 0, gamesNeeded: 3, gamesPlayed: 0, homeTeamId: alTop[0].id });
+            newBracket.push({ id: `ds_al2`, round: 'DS', team1Id: alTop[1].id, team2Id: alWC[0].winnerId!, wins1: 0, wins2: 0, gamesNeeded: 3, gamesPlayed: 0, homeTeamId: alTop[1].id });
+        }
+        if (nlWC.length >= 2) {
+            newBracket.push({ id: `ds_nl1`, round: 'DS', team1Id: nlTop[0].id, team2Id: nlWC[1].winnerId!, wins1: 0, wins2: 0, gamesNeeded: 3, gamesPlayed: 0, homeTeamId: nlTop[0].id });
+            newBracket.push({ id: `ds_nl2`, round: 'DS', team1Id: nlTop[1].id, team2Id: nlWC[0].winnerId!, wins1: 0, wins2: 0, gamesNeeded: 3, gamesPlayed: 0, homeTeamId: nlTop[1].id });
+        }
+    } else if (nextRound === 'CS') {
+        const alDS = currentBracket.filter(s => s.round === 'DS' && s.winnerId && season.teams.find(t => t.id === s.winnerId)?.league === 'AL');
+        const nlDS = currentBracket.filter(s => s.round === 'DS' && s.winnerId && season.teams.find(t => t.id === s.winnerId)?.league === 'NL');
+        
+        if (alDS.length === 2) {
+            const team1 = season.teams.find(t => t.id === alDS[0].winnerId!);
+            const team2 = season.teams.find(t => t.id === alDS[1].winnerId!);
+            const betterTeam = team1 && team2 && team1.wins > team2.wins ? team1.id : alDS[0].winnerId!;
+            newBracket.push({ id: `cs_al`, round: 'CS', team1Id: alDS[0].winnerId!, team2Id: alDS[1].winnerId!, wins1: 0, wins2: 0, gamesNeeded: 4, gamesPlayed: 0, homeTeamId: betterTeam });
+        }
+        if (nlDS.length === 2) {
+            const team1 = season.teams.find(t => t.id === nlDS[0].winnerId!);
+            const team2 = season.teams.find(t => t.id === nlDS[1].winnerId!);
+            const betterTeam = team1 && team2 && team1.wins > team2.wins ? team1.id : nlDS[0].winnerId!;
+            newBracket.push({ id: `cs_nl`, round: 'CS', team1Id: nlDS[0].winnerId!, team2Id: nlDS[1].winnerId!, wins1: 0, wins2: 0, gamesNeeded: 4, gamesPlayed: 0, homeTeamId: betterTeam });
+        }
+    } else if (nextRound === 'World Series') {
+        const alCS = currentBracket.find(s => s.round === 'CS' && s.winnerId && season.teams.find(t => t.id === s.winnerId)?.league === 'AL');
+        const nlCS = currentBracket.find(s => s.round === 'CS' && s.winnerId && season.teams.find(t => t.id === s.winnerId)?.league === 'NL');
+        
+        if (alCS?.winnerId && nlCS?.winnerId) {
+            const alTeam = season.teams.find(t => t.id === alCS.winnerId);
+            const nlTeam = season.teams.find(t => t.id === nlCS.winnerId);
+            const betterTeam = alTeam && nlTeam && alTeam.wins > nlTeam.wins ? alTeam.id : alCS.winnerId;
+            newBracket.push({ id: `ws`, round: 'World Series', team1Id: alCS.winnerId, team2Id: nlCS.winnerId, wins1: 0, wins2: 0, gamesNeeded: 4, gamesPlayed: 0, homeTeamId: betterTeam });
+        }
+    }
+    
+    // Advance 2 days for travel between rounds
+    const nextDate = new Date(season.date);
+    nextDate.setDate(nextDate.getDate() + 2);
+    
+    setIsBetweenRounds(false);
+    setCompletedRound(undefined);
+    setTravelDaysRemaining(0);
+    
+    setSeason(prev => ({ 
+        ...prev, 
+        date: nextDate,
+        isPlaying: false,
+        postseason: {
+            bracket: newBracket,
+            round: nextRound
+        }
+    }));
+  };
+
   const simulateDay = () => {
     if (season.phase === 'Regular Season') {
       const sameDay = (a: Date, b: Date) => a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth() && a.getUTCDate() === b.getUTCDate();
@@ -308,66 +383,56 @@ const App = () => {
             
             if (currIdx === 3) {
                 setSeason(prev => ({ ...prev, phase: 'Complete', isPlaying: false }));
-                alert('World Series Complete! Champion crowned!');
+                setIsBetweenRounds(true);
+                setCompletedRound('World Series');
                 return;
             }
 
-             const nextRound = roundOrder[currIdx + 1];
-             const newBracket = [...currentBracket];
-             
-             // Create next round matchups
-             if (nextRound === 'DS') {
-                 const alWC = currentBracket.filter(s => s.winnerId && season.teams.find(t => t.id === s.winnerId)?.league === 'AL');
-                 const nlWC = currentBracket.filter(s => s.winnerId && season.teams.find(t => t.id === s.winnerId)?.league === 'NL');
-                 
-                 const alTop = season.teams.filter(t => t.league === 'AL').sort((a,b) => b.wins - a.wins);
-                 const nlTop = season.teams.filter(t => t.league === 'NL').sort((a,b) => b.wins - a.wins);
-                 
-                 if (alWC.length >= 2) {
-                     newBracket.push({ id: `ds_al1`, round: 'DS', team1Id: alTop[0].id, team2Id: alWC[1].winnerId!, wins1: 0, wins2: 0, gamesNeeded: 3, gamesPlayed: 0, homeTeamId: alTop[0].id });
-                     newBracket.push({ id: `ds_al2`, round: 'DS', team1Id: alTop[1].id, team2Id: alWC[0].winnerId!, wins1: 0, wins2: 0, gamesNeeded: 3, gamesPlayed: 0, homeTeamId: alTop[1].id });
-                 }
-                 if (nlWC.length >= 2) {
-                     newBracket.push({ id: `ds_nl1`, round: 'DS', team1Id: nlTop[0].id, team2Id: nlWC[1].winnerId!, wins1: 0, wins2: 0, gamesNeeded: 3, gamesPlayed: 0, homeTeamId: nlTop[0].id });
-                     newBracket.push({ id: `ds_nl2`, round: 'DS', team1Id: nlTop[1].id, team2Id: nlWC[0].winnerId!, wins1: 0, wins2: 0, gamesNeeded: 3, gamesPlayed: 0, homeTeamId: nlTop[1].id });
-                 }
-             } else if (nextRound === 'CS') {
-                 const alDS = currentBracket.filter(s => s.round === 'DS' && s.winnerId && season.teams.find(t => t.id === s.winnerId)?.league === 'AL');
-                 const nlDS = currentBracket.filter(s => s.round === 'DS' && s.winnerId && season.teams.find(t => t.id === s.winnerId)?.league === 'NL');
-                 
-                 if (alDS.length === 2) {
-                    const team1 = season.teams.find(t => t.id === alDS[0].winnerId!);
-                    const team2 = season.teams.find(t => t.id === alDS[1].winnerId!);
-                    const betterTeam = team1 && team2 && team1.wins > team2.wins ? team1.id : alDS[0].winnerId!;
-                    newBracket.push({ id: `cs_al`, round: 'CS', team1Id: alDS[0].winnerId!, team2Id: alDS[1].winnerId!, wins1: 0, wins2: 0, gamesNeeded: 4, gamesPlayed: 0, homeTeamId: betterTeam });
-                 }
-                 if (nlDS.length === 2) {
-                    const team1 = season.teams.find(t => t.id === nlDS[0].winnerId!);
-                    const team2 = season.teams.find(t => t.id === nlDS[1].winnerId!);
-                    const betterTeam = team1 && team2 && team1.wins > team2.wins ? team1.id : nlDS[0].winnerId!;
-                    newBracket.push({ id: `cs_nl`, round: 'CS', team1Id: nlDS[0].winnerId!, team2Id: nlDS[1].winnerId!, wins1: 0, wins2: 0, gamesNeeded: 4, gamesPlayed: 0, homeTeamId: betterTeam });
-                 }
-             } else if (nextRound === 'World Series') {
-                 const alCS = currentBracket.find(s => s.round === 'CS' && s.winnerId && season.teams.find(t => t.id === s.winnerId)?.league === 'AL');
-                 const nlCS = currentBracket.find(s => s.round === 'CS' && s.winnerId && season.teams.find(t => t.id === s.winnerId)?.league === 'NL');
-                 
-                 if (alCS?.winnerId && nlCS?.winnerId) {
-                     const alTeam = season.teams.find(t => t.id === alCS.winnerId);
-                     const nlTeam = season.teams.find(t => t.id === nlCS.winnerId);
-                     const betterTeam = alTeam && nlTeam && alTeam.wins > nlTeam.wins ? alTeam.id : alCS.winnerId;
-                     newBracket.push({ id: `ws`, round: 'World Series', team1Id: alCS.winnerId, team2Id: nlCS.winnerId, wins1: 0, wins2: 0, gamesNeeded: 4, gamesPlayed: 0, homeTeamId: betterTeam });
-                 }
-             }
-             
-             setSeason(prev => ({ 
-                 ...prev, 
-                 isPlaying: false,
-                 postseason: {
-                     bracket: newBracket,
-                     round: nextRound
-                 }
-             }));
-             alert(`Round ${season.postseason.round} Complete! Moving to ${nextRound}.`);
+            // Stop playing and wait for user to click "Continue"
+            setIsBetweenRounds(true);
+            setCompletedRound(season.postseason.round);
+            setSeason(prev => ({ ...prev, isPlaying: false }));
+            return;
+        }
+
+        // Travel day logic: skip game simulation on travel days (when home/away switches between games)
+        const anyTravel = activeSeries.some(s => {
+            const gp = s.gamesPlayed || 0;
+            if (gp === 0) return false;
+            // Determine if there's a travel day (when venue changes)
+            const getHomeForGame = (seriesObj: PostseasonSeries, gameNum: number) => {
+                if (seriesObj.round === 'Wild Card') {
+                    return gameNum < 2 ? seriesObj.team1Id : seriesObj.team2Id;
+                } else if (seriesObj.round === 'DS') {
+                    return gameNum < 2 ? seriesObj.team1Id : gameNum < 4 ? seriesObj.team2Id : seriesObj.team1Id;
+                } else {
+                    return gameNum < 2 ? seriesObj.team1Id : gameNum < 5 ? seriesObj.team2Id : seriesObj.team1Id;
+                }
+            };
+            const prevHome = getHomeForGame(s, gp - 1);
+            const nextHome = getHomeForGame(s, gp);
+            return prevHome !== nextHome;
+        });
+
+        if (anyTravel && travelDaysRemaining > 0) {
+            // Simulate a travel day - no games, just advance time
+            const nextDate = new Date(season.date);
+            nextDate.setDate(nextDate.getDate() + 1);
+            setTravelDaysRemaining(prev => prev - 1);
+            setSeason(prev => ({
+                ...prev,
+                date: nextDate,
+                teams: [...prev.teams].map(t => ({
+                    ...t,
+                    roster: t.roster.map(p => p.position === Position.P ? { ...p, daysRest: Math.min(5, p.daysRest + 1) } : p)
+                }))
+            }));
+            return;
+        }
+
+        // Check if we need to start a travel day
+        if (anyTravel && travelDaysRemaining === 0) {
+            setTravelDaysRemaining(1); // 1 travel day between venue changes
             return;
         }
 
@@ -609,7 +674,15 @@ const App = () => {
                 {/* Postseason Bracket View */}
                 {season.phase === 'Postseason' && season.postseason && (
                     <div className="mb-12">
-                        <Postseason bracket={season.postseason.bracket} teams={season.teams} round={season.postseason.round} />
+                        <Postseason 
+                          bracket={season.postseason.bracket} 
+                          teams={season.teams} 
+                          round={season.postseason.round}
+                          completedRound={completedRound}
+                          onAdvanceRound={advanceRound}
+                          isBetweenRounds={isBetweenRounds}
+                          travelDaysRemaining={travelDaysRemaining}
+                        />
                     </div>
                 )}
 

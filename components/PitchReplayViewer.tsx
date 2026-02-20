@@ -393,6 +393,187 @@ const PitchTable: React.FC<{
 };
 
 // ======================================================================
+// Sub-component: Hit Location Field Chart (2D diamond view)
+// ======================================================================
+const FIELD_W = 400;
+const FIELD_H = 400;
+const FIELD_CX = FIELD_W / 2;     // home plate x center
+const FIELD_CY = FIELD_H - 30;    // home plate y (near bottom)
+const FIELD_SCALE = 0.75;         // ft → px scale factor
+
+// Convert field coordinates (ft from home: x=left/right, y=toward CF) to SVG
+const fieldToSVG = (fx: number, fy: number) => ({
+  px: FIELD_CX + fx * FIELD_SCALE,
+  py: FIELD_CY - fy * FIELD_SCALE,
+});
+
+const HIT_TYPE_COLORS: Record<string, string> = {
+  ground: '#22c55e',  // green
+  line:   '#3b82f6',  // blue
+  fly:    '#eab308',  // yellow
+  hr:     '#ef4444',  // red
+};
+
+const HitLocationChart: React.FC<{
+  pitches: ReplayPitchEvent[];
+}> = ({ pitches }) => {
+  // Only show pitches that resulted in balls in play with hit location data
+  const hits = useMemo(() =>
+    pitches.filter(p => p.result === 'In Play' && p.hitLocation),
+    [pitches]
+  );
+
+  // Draw foul lines and outfield fence arc
+  const foulLineLength = 340;
+  const leftFoul = fieldToSVG(-foulLineLength * Math.sin(Math.PI / 4), foulLineLength * Math.cos(Math.PI / 4));
+  const rightFoul = fieldToSVG(foulLineLength * Math.sin(Math.PI / 4), foulLineLength * Math.cos(Math.PI / 4));
+  const homeSVG = fieldToSVG(0, 0);
+
+  // Outfield fence arc (approximate at ~330-400 ft)
+  const fencePoints: string[] = [];
+  for (let angle = -45; angle <= 45; angle += 3) {
+    const rad = (angle * Math.PI) / 180;
+    // Variable fence distance: shorter in corners (~330), deeper in CF (~400)
+    const dist = 330 + 70 * Math.cos(rad * 2);
+    const pt = fieldToSVG(dist * Math.sin(rad), dist * Math.cos(rad));
+    fencePoints.push(`${pt.px.toFixed(1)},${pt.py.toFixed(1)}`);
+  }
+
+  // Infield diamond (90ft basepaths)
+  const first = fieldToSVG(63.6, 63.6);   // 90 * cos(45), 90 * sin(45)
+  const second = fieldToSVG(0, 127.3);     // 90√2
+  const third = fieldToSVG(-63.6, 63.6);
+
+  // Infield dirt arc (~95ft radius)
+  const infieldArc: string[] = [];
+  for (let angle = -45; angle <= 45; angle += 5) {
+    const rad = (angle * Math.PI) / 180;
+    const pt = fieldToSVG(95 * Math.sin(rad), 95 * Math.cos(rad));
+    infieldArc.push(`${pt.px.toFixed(1)},${pt.py.toFixed(1)}`);
+  }
+
+  // Grass line at ~150ft
+  const grassArc: string[] = [];
+  for (let angle = -45; angle <= 45; angle += 3) {
+    const rad = (angle * Math.PI) / 180;
+    const pt = fieldToSVG(165 * Math.sin(rad), 165 * Math.cos(rad));
+    grassArc.push(`${pt.px.toFixed(1)},${pt.py.toFixed(1)}`);
+  }
+
+  return (
+    <div>
+      <svg viewBox={`0 0 ${FIELD_W} ${FIELD_H}`} className="w-full max-w-sm mx-auto">
+        {/* Background */}
+        <rect x="0" y="0" width={FIELD_W} height={FIELD_H} fill="#0f172a" rx="8" />
+
+        {/* Outfield grass fill */}
+        <polygon
+          points={`${homeSVG.px},${homeSVG.py} ${leftFoul.px},${leftFoul.py} ${fencePoints.join(' ')} ${rightFoul.px},${rightFoul.py}`}
+          fill="#15412a"
+          opacity="0.3"
+        />
+
+        {/* Infield dirt */}
+        <polygon
+          points={`${homeSVG.px},${homeSVG.py} ${infieldArc.join(' ')} ${homeSVG.px},${homeSVG.py}`}
+          fill="#3d2a14"
+          opacity="0.3"
+        />
+
+        {/* Outfield fence */}
+        <polyline points={fencePoints.join(' ')} fill="none" stroke="#475569" strokeWidth="2" strokeDasharray="6 3" />
+
+        {/* Foul lines */}
+        <line x1={homeSVG.px} y1={homeSVG.py} x2={leftFoul.px} y2={leftFoul.py} stroke="#475569" strokeWidth="1.5" />
+        <line x1={homeSVG.px} y1={homeSVG.py} x2={rightFoul.px} y2={rightFoul.py} stroke="#475569" strokeWidth="1.5" />
+
+        {/* Base paths */}
+        <line x1={homeSVG.px} y1={homeSVG.py} x2={first.px} y2={first.py} stroke="#64748b" strokeWidth="1" />
+        <line x1={first.px} y1={first.py} x2={second.px} y2={second.py} stroke="#64748b" strokeWidth="1" />
+        <line x1={second.px} y1={second.py} x2={third.px} y2={third.py} stroke="#64748b" strokeWidth="1" />
+        <line x1={third.px} y1={third.py} x2={homeSVG.px} y2={homeSVG.py} stroke="#64748b" strokeWidth="1" />
+
+        {/* Bases */}
+        {[first, second, third].map((b, i) => (
+          <rect key={i} x={b.px - 4} y={b.py - 4} width={8} height={8} fill="#94a3b8" transform={`rotate(45 ${b.px} ${b.py})`} />
+        ))}
+
+        {/* Home plate */}
+        <circle cx={homeSVG.px} cy={homeSVG.py} r={5} fill="#e2e8f0" />
+
+        {/* Mound */}
+        {(() => {
+          const mound = fieldToSVG(0, 60.5);
+          return <circle cx={mound.px} cy={mound.py} r={3} fill="#94a3b8" opacity="0.5" />;
+        })()}
+
+        {/* Distance markers */}
+        {[200, 300, 400].map(d => {
+          const pt = fieldToSVG(0, d);
+          return (
+            <text key={d} x={pt.px + 12} y={pt.py} fill="#475569" fontSize="9" fontFamily="monospace">{d}ft</text>
+          );
+        })}
+
+        {/* Hit dots */}
+        {hits.map((p, i) => {
+          const loc = p.hitLocation!;
+          const { px, py } = fieldToSVG(loc.x, loc.y);
+          const color = HIT_TYPE_COLORS[loc.type] || '#94a3b8';
+          // Clamp to visible area
+          const cx = Math.max(5, Math.min(FIELD_W - 5, px));
+          const cy = Math.max(5, Math.min(FIELD_H - 5, py));
+          return (
+            <circle
+              key={i}
+              cx={cx}
+              cy={cy}
+              r={4}
+              fill={color}
+              opacity={0.8}
+              stroke="#000"
+              strokeWidth="0.5"
+            >
+              <title>{loc.type.toUpperCase()} — {loc.x}ft, {loc.y}ft</title>
+            </circle>
+          );
+        })}
+
+        {/* Labels */}
+        <text x={FIELD_CX} y="16" textAnchor="middle" fill="#64748b" fontSize="12" fontFamily="monospace">
+          Hit Location Chart
+        </text>
+        {(() => {
+          const lf = fieldToSVG(-180, 220);
+          const cf = fieldToSVG(0, 280);
+          const rf = fieldToSVG(180, 220);
+          return (
+            <>
+              <text x={lf.px} y={lf.py} textAnchor="middle" fill="#64748b" fontSize="10" fontFamily="monospace">LF</text>
+              <text x={cf.px} y={cf.py} textAnchor="middle" fill="#64748b" fontSize="10" fontFamily="monospace">CF</text>
+              <text x={rf.px} y={rf.py} textAnchor="middle" fill="#64748b" fontSize="10" fontFamily="monospace">RF</text>
+            </>
+          );
+        })()}
+      </svg>
+
+      {/* Legend */}
+      <div className="flex justify-center gap-3 mt-2">
+        {Object.entries(HIT_TYPE_COLORS).map(([type, color]) => {
+          const count = hits.filter(h => h.hitLocation?.type === type).length;
+          return (
+            <span key={type} className="flex items-center gap-1 text-xs font-mono text-slate-400">
+              <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
+              {type === 'hr' ? 'HR' : type.charAt(0).toUpperCase() + type.slice(1)} ({count})
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+// ======================================================================
 // Main PitchReplayViewer component
 // ======================================================================
 export const PitchReplayViewer: React.FC<PitchReplayViewerProps> = ({
@@ -404,7 +585,8 @@ export const PitchReplayViewer: React.FC<PitchReplayViewerProps> = ({
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [filterType, setFilterType]   = useState<string>('all');
   const [filterInning, setFilterInning] = useState<number | 'all'>('all');
-  const [activeView, setActiveView] = useState<'spray' | '3d'>('spray');
+  const [activeView, setActiveView] = useState<'spray' | '3d' | 'field'>('spray');
+  const [leftView, setLeftView] = useState<'zone' | 'field'>('zone');
 
   // Extract all pitch events from replay
   const allPitches = useMemo(
@@ -537,28 +719,48 @@ export const PitchReplayViewer: React.FC<PitchReplayViewerProps> = ({
       {/* ── Main layout ──────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
-        {/* Left: Strike zone chart */}
+        {/* Left: Strike zone chart / Hit location field */}
         <div className="bg-slate-900/60 rounded-xl border border-slate-800 p-3">
-          <p className="text-xs font-bold text-slate-400 uppercase mb-2 tracking-wider">Strike Zone Chart</p>
-          <StrikeZoneChart
-            pitches={visiblePitches}
-            selected={selectedIdx}
-            onSelect={handleSelect}
-            filterType={filterType}
-          />
-          {selectedPitch && (
-            <div className="mt-2 text-xs font-mono text-slate-400 text-center">
-              <span className="text-white font-semibold">{selectedPitch.pitchType}</span>
-              {' '}@ {selectedPitch.speed} mph |{' '}
-              <span className={
-                selectedPitch.result === 'Ball' ? 'text-emerald-400' :
-                selectedPitch.result.includes('Strike') ? 'text-red-400' :
-                'text-blue-400'
-              }>
-                {selectedPitch.result}
-              </span>
-              {' '}| {selectedPitch.countBefore}
-            </div>
+          {/* Toggle between zone and field */}
+          <div className="flex gap-1 mb-2">
+            <button
+              onClick={() => setLeftView('zone')}
+              className={`px-3 py-1 rounded text-xs font-medium transition ${leftView === 'zone' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}`}
+            >
+              Strike Zone
+            </button>
+            <button
+              onClick={() => setLeftView('field')}
+              className={`px-3 py-1 rounded text-xs font-medium transition ${leftView === 'field' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}`}
+            >
+              Hit Locations
+            </button>
+          </div>
+          {leftView === 'zone' ? (
+            <>
+              <StrikeZoneChart
+                pitches={visiblePitches}
+                selected={selectedIdx}
+                onSelect={handleSelect}
+                filterType={filterType}
+              />
+              {selectedPitch && (
+                <div className="mt-2 text-xs font-mono text-slate-400 text-center">
+                  <span className="text-white font-semibold">{selectedPitch.pitchType}</span>
+                  {' '}@ {selectedPitch.speed} mph |{' '}
+                  <span className={
+                    selectedPitch.result === 'Ball' ? 'text-emerald-400' :
+                    selectedPitch.result.includes('Strike') ? 'text-red-400' :
+                    'text-blue-400'
+                  }>
+                    {selectedPitch.result}
+                  </span>
+                  {' '}| {selectedPitch.countBefore}
+                </div>
+              )}
+            </>
+          ) : (
+            <HitLocationChart pitches={visiblePitches} />
           )}
         </div>
 

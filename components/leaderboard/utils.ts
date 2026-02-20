@@ -1,5 +1,5 @@
 
-import { Player, Position } from '../../types';
+import { Player, Position, StatsCounters } from '../../types';
 
 export type StatCategory = 'batting' | 'pitching' | 'defense' | 'statcast_bat' | 'adv_bat';
 export type SortKey = 'g' | 'pa' | 'avg' | 'obp' | 'slg' | 'hr' | 'rbi' | 'bb' | 'ibb' | 'ops' | 'war' | 'd' | 't' | 'gidp' | 'sb' | 'cs' | 'sf' | 'sac' |
@@ -9,7 +9,7 @@ export type SortKey = 'g' | 'pa' | 'avg' | 'obp' | 'slg' | 'hr' | 'rbi' | 'bb' |
                'woba' | 'wrc_plus' | 'iso' | 'babip' | 'bb_pct' | 'k_pct';
 
 export const getValue = (p: Player, key: SortKey): number => {
-    const s = p.statsCounters || {};
+    const s: Partial<StatsCounters> = p.statsCounters || {};
     const pa = (s.ab || 0) + (s.bb || 0) + (s.hbp || 0) + (s.sf || 0) + (s.sac || 0);
 
     // Games played - use actual tracked values

@@ -47,6 +47,26 @@ export interface StatcastPitchingStats {
   extension: number;
 }
 
+/** Baseball Savant batter metrics fetched via pybaseball */
+export interface SavantBatterStats {
+  xwoba: number;
+  xba: number;
+  xslg: number;
+  woba: number;
+  ba: number;
+  slg: number;
+  pa: number;
+  k_pct: number;
+  bb_pct: number;
+  avg_exit_velo: number;
+  max_exit_velo: number;
+  barrel_pct: number;
+  hard_hit_pct: number;
+  la_sweet_spot_pct: number;
+  avg_launch_angle: number;
+  sprint_speed: number;
+}
+
 export interface DefensiveStats {
   fpct: number;
   drs: number;
@@ -280,6 +300,8 @@ export interface Player {
   batting?: BattingStats;
   pitching?: PitchingStats;
   defense?: DefensiveStats;
+  savantBatting?: SavantBatterStats;
+  savantBattingHistory?: Record<string, SavantBatterStats>;
   statsCounters: StatsCounters;
   trait?: string;
   injury: Injury;
@@ -404,6 +426,8 @@ export interface ReplayPitchEvent {
   platePoint: ReplayVector3;
   ballPath: ReplayVector3[];
   runners: ReplayRunnerState[];
+  /** Where the ball landed on the field (if in play) */
+  hitLocation?: { x: number; y: number; type: 'ground' | 'fly' | 'line' | 'hr' };
 }
 
 export interface ReplayActionEvent {
@@ -442,6 +466,7 @@ export interface GameResult {
   replaySeed?: number;
   replay?: GameReplayData;
   stadium?: string;
+  lineScore?: { home: number[]; away: number[] };
 }
 
 export interface PostseasonSeries {
@@ -455,6 +480,7 @@ export interface PostseasonSeries {
   winnerId?: string;
   gamesPlayed?: number; // Track total games played in series
   homeTeamId?: string; // Track which team has home advantage
+  travelDays?: number; // Days between games for travel (0 = same city, 1 = travel day)
 }
 
 export interface SeasonState {

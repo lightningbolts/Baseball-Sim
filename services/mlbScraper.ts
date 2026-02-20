@@ -1,8 +1,11 @@
 
-import { Player, Position, StaffMember, PlayerRatings, PlayerHistoryEntry, StatsCounters, DefensiveStats, PitchRepertoireEntry } from "../types";
+import { Player, Position, StaffMember, PlayerRatings, PlayerHistoryEntry, StatsCounters, DefensiveStats, PitchRepertoireEntry, SavantBatterStats } from "../types";
 
 // Import real pitch arsenal data fetched from Baseball Savant via pybaseball
 import pitchArsenalData from './pitchArsenals.json';
+
+// Import real batter savant data fetched from Baseball Savant via pybaseball
+import batterSavantData from './batterSavant.json';
 
 const BASE_URL = "https://statsapi.mlb.com/api/v1";
 
@@ -23,6 +26,24 @@ interface PitchArsenalCache {
 }
 
 const realArsenals: PitchArsenalCache = pitchArsenalData as PitchArsenalCache;
+
+// Type the imported batter savant data
+interface BatterSavantEntry {
+    name: string;
+    mlbId: number;
+    currentStats: SavantBatterStats | null;
+    statsHistory: Record<string, SavantBatterStats>;
+}
+
+interface BatterSavantCache {
+    lastUpdated: string;
+    source: string;
+    years: number[];
+    batterCount: number;
+    batters: Record<string, BatterSavantEntry>;
+}
+
+const realBatterSavant: BatterSavantCache = batterSavantData as unknown as BatterSavantCache;
 
 const mapPosition = (posData: any): Position => {
     if (
@@ -721,12 +742,80 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                 } 
                 
                 if (position !== Position.P || isTwoWay) {
-                    // Logic for Batting attributes (Even for pitchers if two way)
-                    // We need to find hitting stats specifically
-                    // Search history for a hitting entry in 2025/2026
+                    // Logic for Batting attributes using Baseball Savant data first, then MLB API fallback
                     const hStats = history.find(h => (h.year === '2025' || h.year === '2024') && h.stats.avg !== undefined)?.stats;
 
-                    if (hStats) {
+                    // Try to get real Baseball Savant batter data
+                    const realBatterData = realBatterSavant.batters[String(personId)];
+                    let savantCurrent: SavantBatterStats | null = null;
+                    let savantHistory: Record<string, SavantBatterStats> = {};
+                    
+                    if (realBatterData) {
+                        savantCurrent = realBatterData.currentStats || null;
+                        savantHistory = realBatterData.statsHistory || {};
+                        console.log(`[${personId}] ${realBatterData.name}: Using Savant batter data (xwOBA: ${savantCurrent?.xwoba}, xBA: ${savantCurrent?.xba})`);
+                    }
+
+                    if (savantCurrent && savantCurrent.xwoba > 0) {
+                        // USE BASEBALL SAVANT DATA - more accurate than raw MLB API stats
+                        // xwOBA is the gold standard for measuring offensive quality
+                        const xwoba = savantCurrent.xwoba;
+                        const xba = savantCurrent.xba;
+                        const xslg = savantCurrent.xslg;
+                        const barrelPct = savantCurrent.barrel_pct || 0;
+                        const hardHitPct = savantCurrent.hard_hit_pct || 0;
+                        const avgExitVelo = savantCurrent.avg_exit_velo || 0;
+                        const bbPct = savantCurrent.bb_pct || 0;
+                        const kPct = savantCurrent.k_pct || 0;
+                        const sprintSpeed = savantCurrent.sprint_speed || 0;
+                        const laSweetSpot = savantCurrent.la_sweet_spot_pct || 0;
+                        
+                        // Contact: Based on xBA (ability to make contact and get hits)
+                        // xBA range: elite .300+, avg .250, poor .200
+                        attributes.contact = calcRating(xba, 0.200, 0.300);
+                        
+                        // Power: Weighted combo of barrel%, exit velo, xSLG
+                        // Barrel% range: elite 15%+, avg 6-7%, poor <3%
+                        const barrelScore = calcRating(barrelPct, 3, 18);
+                        const evScore = calcRating(avgExitVelo, 86, 94);
+                        const xslgScore = calcRating(xslg, 0.350, 0.580);
+                        attributes.power = Math.round(barrelScore * 0.40 + evScore * 0.25 + xslgScore * 0.35);
+                        
+                        // Eye: Based on BB% and Chase% (inverse of K%)
+                        // BB% range: elite 12%+, avg 8%, poor <5%
+                        // K% range: elite <15%, avg 22%, poor >30%
+                        const bbScore = calcRating(bbPct, 4, 15);
+                        const kScore = calcRating(35 - kPct, 5, 25); // Invert K%
+                        attributes.eye = Math.round(bbScore * 0.55 + kScore * 0.45);
+                        
+                        // Speed: Sprint speed (ft/s), range 23-31
+                        if (sprintSpeed > 0) {
+                            attributes.speed = calcRating(sprintSpeed, 25, 31);
+                        } else {
+                            // Fallback to SB rate from MLB stats
+                            const sb = hStats?.sb || 0;
+                            const games = hStats?.games || 1;
+                            attributes.speed = calcRating(sb / games, 0.0, 0.20);
+                        }
+                        
+                        attributes.defense = calcRating(defensiveStats.fpct, 0.950, 0.995);
+                        attributes.reaction = attributes.defense;
+                        attributes.arm = attributes.defense;
+                        
+                        // Overall: xwOBA-based (the single best measure of offensive production)
+                        // xwOBA range: elite .400+, great .360, avg .315, poor .280
+                        const bOverall = calcRating(xwoba, 0.280, 0.400);
+                        if (position !== Position.P) overall = bOverall;
+                        if (isTwoWay && bOverall > overall) overall = Math.round((overall + bOverall) / 2);
+                        
+                        if (barrelPct >= 12 && avgExitVelo >= 91) trait = "Slugger";
+                        else if (xba >= 0.290) trait = "Contact Hitter";
+                        else if (sprintSpeed >= 29.5) trait = "Speedster";
+                        else if (bbPct >= 12 && kPct <= 18) trait = "Patient Hitter";
+                        else if (hardHitPct >= 48) trait = "Hard-Hitter";
+                        
+                    } else if (hStats) {
+                        // FALLBACK: Use MLB API stats if no savant data available
                         const avg = parseFloat(hStats.avg as any) || .250;
                         const ops = parseFloat(hStats.ops as any) || .720;
                         const hr = hStats.hr || 0;
@@ -746,7 +835,6 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
 
                         const bOverall = calcRating(ops, 0.650, 0.950);
                         if (position !== Position.P) overall = bOverall;
-                        // If Two-Way, usually take the higher or average? Let's favor position rating if primarily hitter
                         if (isTwoWay && bOverall > overall) overall = Math.round((overall + bOverall) / 2);
 
                         if (hr > 30) trait = "Slugger";
@@ -787,6 +875,11 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                 
                 const avgVelo = arsenal.reduce((sum, p) => sum + (p.speed * (p.usage || 0)), 0) / (arsenal.reduce((sum, p) => sum + (p.usage || 0), 1));
 
+                // Prepare Savant batter data for the player object
+                const realBatterEntry = realBatterSavant.batters[String(personId)];
+                const playerSavantBatting = realBatterEntry?.currentStats || undefined;
+                const playerSavantBattingHistory = realBatterEntry?.statsHistory || undefined;
+
                 const player: Player = {
                     id: `mlb_${personId}`,
                     name: person.fullName,
@@ -804,11 +897,18 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                     injury: { isInjured: false, type: '', daysRemaining: 0, severity: 'Day-to-Day' },
                     seasonStats: { games: 0, hr: 0, avg: 0, wins: 0, losses: 0, era: 0 },
                     statsCounters: statsCounters,
+                    savantBatting: playerSavantBatting,
+                    savantBattingHistory: playerSavantBattingHistory,
                     // Init empty stats
                     batting: { 
                         avg:0, obp:0, slg:0, ops:0, hr:0, rbi:0, sb:0, wrc_plus:100, war:0, 
                         woba: 0, iso: 0, babip: 0, bb_pct: 0, k_pct: 0,
-                        exitVelocity: 0, launchAngle: 0, barrel_pct: 0, hardHit_pct: 0, whiff_pct: 0, sprintSpeed: 25 + (attributes.speed/5) 
+                        exitVelocity: playerSavantBatting?.avg_exit_velo || 0, 
+                        launchAngle: playerSavantBatting?.avg_launch_angle || 0, 
+                        barrel_pct: playerSavantBatting?.barrel_pct || 0, 
+                        hardHit_pct: playerSavantBatting?.hard_hit_pct || 0, 
+                        whiff_pct: 0, 
+                        sprintSpeed: playerSavantBatting?.sprint_speed || (25 + (attributes.speed/5)) 
                     },
                     pitching: { 
                         era:0, whip:0, so:0, bb:0, ip:0, saves:0, holds:0, blownSaves:0, fip:0, war:0, pitchesThrown: 0,

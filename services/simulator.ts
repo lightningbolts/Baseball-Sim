@@ -476,21 +476,24 @@ const simulatePitch = (pitcher: Player, batter: Player, currentPitches: number):
     const hist = getHistoricalPerformance(pitcher);
     
     const effectiveControl = getEffectiveAttr(pitcher.attributes.control || 50, fatiguePenalty);
-    const effectiveEye = getEffectiveAttr(batter.attributes.eye || 50, 0);
+    const rawEye = getEffectiveAttr(batter.attributes.eye || 50, 0);
+    // Savant-driven eye ranges from ~9 (free-swingers) to ~72 (patient hitters).
+    // Compress toward league mean (42) to prevent extreme walk/K divergence.
+    // eye=9 → 22, eye=39 → 40, eye=72 → 60 (keeps ordering, tames extremes)
+    const effectiveEye = 42 + (rawEye - 42) * 0.60;
     
-    // Rare events - slightly increased for realism
+    // Rare events
     if (Math.random() < 0.005) return 'HBP'; 
     if (Math.random() < 0.004) return 'WP';
 
-    // Strike Zone Probability - slightly raised to reduce excessive walk rates (WHIP fix)
-    // MLB average BB/9 ~3.2; higher base = fewer balls = fewer walks = lower WHIP
+    // Strike Zone Probability — higher = more strikes in zone, fewer walks
+    // MLB average ~62-64% of pitches are in-zone or swung-at
     const strikeZoneProb = 0.46 + (effectiveControl * 0.0010);
     
     if (Math.random() > strikeZoneProb) {
-        // Outside Zone
+        // Outside Zone — chase probability based on compressed eye
         const chaseProb = 0.28 - (effectiveEye * 0.003);
         if (Math.random() < chaseProb) {
-             // Chased pitch - usually strike swinging
              return 'StrikeSwinging';
         }
         return 'Ball';
@@ -504,27 +507,70 @@ const simulatePitch = (pitcher: Player, batter: Player, currentPitches: number):
 
     // Swing Result
     let effectiveStuff = getEffectiveAttr(pitcher.attributes.stuff || 50, fatiguePenalty * 0.8);
-    if (hist.pitchingFactor > 1.15) effectiveStuff += 4; // Reduced bonus
+    if (hist.pitchingFactor > 1.15) effectiveStuff += 3;
 
     const effectiveContact = getEffectiveAttr(batter.attributes.contact || 50, 0);
     
-    // League Contact% is around 76-78%
-    // Increase contact rate slightly to create more balls in play -> more runs -> higher ERA
-    let contactProb = 0.82 + ((effectiveContact - effectiveStuff) * 0.0022);
-    contactProb = Math.max(0.55, Math.min(0.94, contactProb));
+    // Contact% — MLB average ~76-78%, lowered base to produce more Ks with savant spread
+    let contactProb = 0.79 + ((effectiveContact - effectiveStuff) * 0.0020);
+    contactProb = Math.max(0.55, Math.min(0.93, contactProb));
 
     if (Math.random() > contactProb) {
         return 'StrikeSwinging';
     }
 
-    // Foul vs InPlay - reduce foul rate to increase balls in play
-    // More balls in play = more opportunities for hits = higher ERA
-    
-    if (Math.random() < 0.22) return 'Foul'; // Lower foul rate = more balls in play
+    // Foul vs InPlay — raised foul rate for longer ABs and fewer balls in play
+    // More fouls = higher pitch counts, slightly fewer hit opportunities per PA
+    if (Math.random() < 0.26) return 'Foul';
     return 'InPlay';
 };
 
-const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, runners: number[], currentPitches: number, parkFactors?: { run: number; hr: number; babip: number }, defensiveAlignment?: Player[]): { result: string, type: string, desc: string, outs: number, runs: number, rbi: number, ev: number, la: number } => {
+/**
+ * Generate a 2D hit location on a baseball field (0,0 = home plate, y-axis = toward CF)
+ * Coordinates in feet from home plate:
+ *   x: left-right (-150 to 150 for fair territory)
+ *   y: home-to-outfield (0 to 420+)
+ * Pull hitters: RHB pull to left (negative x), LHB pull to right (positive x)
+ */
+const generateHitLocation = (result: string, hitType: 'ground' | 'fly' | 'line' | 'hr', pullBias: number = 0): { x: number; y: number; type: typeof hitType } => {
+    // Angle in degrees: 0 = straight to CF, negative = left field, positive = right field
+    // Foul lines at approx ±45 degrees
+    const gaussRand = () => {
+        const u1 = Math.random();
+        const u2 = Math.random();
+        return Math.sqrt(-2 * Math.log(u1 || 0.001)) * Math.cos(2 * Math.PI * u2);
+    };
+    
+    // Base angle: slightly pull-biased (most hitters pull)
+    let angle = pullBias + gaussRand() * 25; // degrees from center field
+    angle = Math.max(-42, Math.min(42, angle)); // keep in fair territory
+    
+    let distance: number;
+    switch (hitType) {
+        case 'hr':
+            distance = 340 + Math.random() * 90; // 340-430 ft
+            break;
+        case 'fly':
+            distance = 200 + Math.random() * 140; // 200-340 ft  
+            break;
+        case 'line':
+            distance = 120 + Math.random() * 180; // 120-300 ft
+            break;
+        case 'ground':
+        default:
+            distance = 30 + Math.random() * 160; // 30-190 ft
+            break;
+    }
+    
+    // Convert polar to cartesian (angle 0 = up/CF, negative = left)
+    const angleRad = (angle * Math.PI) / 180;
+    const x = distance * Math.sin(angleRad);
+    const y = distance * Math.cos(angleRad);
+    
+    return { x: Math.round(x), y: Math.round(y), type: hitType };
+};
+
+const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, runners: number[], currentPitches: number, parkFactors?: { run: number; hr: number; babip: number }, defensiveAlignment?: Player[]): { result: string, type: string, desc: string, outs: number, runs: number, rbi: number, ev: number, la: number, hitLocation?: { x: number; y: number; type: 'ground' | 'fly' | 'line' | 'hr' } } => {
     const fatiguePenalty = getFatiguePenalty(pitcher, currentPitches);
     
     const batterHist = getHistoricalPerformance(batter);
@@ -535,6 +581,10 @@ const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, r
     const effectiveSpeed = getEffectiveAttr(batter.attributes.speed || 50, 0);
     const effectiveStuff = getEffectiveAttr(pitcher.attributes.stuff || 50, fatiguePenalty);
     
+    // Pull bias: most hitters pull slightly, power hitters pull more
+    // Negative = pull to left (RHB default), positive = pull to right
+    const pullBias = -8 - (effectivePower - 50) * 0.15;
+    
     const baseEV = 85 + (effectivePower / 4);
     const ev = Math.min(120, Math.max(60, baseEV + (Math.random() * 25 - 10)));
     
@@ -543,31 +593,31 @@ const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, r
         if (Math.random() < 0.05) {
             updateDefense(defenseTeam, Position.C, 'A', defensiveAlignment); 
             updateDefense(defenseTeam, Position.TB, 'PO', defensiveAlignment);
-            return { result: 'SAC', type: 'Out', desc: 'lays down a sacrifice bunt', outs: 1, runs: 0, rbi: 0, ev: 45, la: -15 };
+            return { result: 'SAC', type: 'Out', desc: 'lays down a sacrifice bunt', outs: 1, runs: 0, rbi: 0, ev: 45, la: -15, hitLocation: generateHitLocation('SAC', 'ground', 0) };
         }
     }
 
-    // HIT PROBABILITY TUNING - Calibrated for realistic ERA (3.80-4.20 league avg)
-    // Target: .245-.255 league AVG, .315-.325 OBP
-    // BABIP should be ~.295, meaning ~29.5% of balls in play become hits
-    let hitProb = 0.282 + ((effectiveContact - effectiveStuff) * 0.0024) + (fatiguePenalty * 0.010);
+    // HIT PROBABILITY TUNING — calibrated for savant-driven attributes
+    // Target: .243-.250 league AVG, .310-.320 OBP, 3.90-4.20 league ERA
+    // BABIP target ~.292-.298
+    let hitProb = 0.272 + ((effectiveContact - effectiveStuff) * 0.0020) + (fatiguePenalty * 0.008);
     
-    // Apply historical factors - moderate impact for proven hitters
+    // Historical factors — reduced since savant contact already captures batter quality
     const cappedContactFactor = Math.min(batterHist.contactFactor, 1.25);
-    if (cappedContactFactor > 1.20) hitProb += 0.018;  // Elite hitters get modest advantage
-    else if (cappedContactFactor > 1.10) hitProb += 0.012;
-    else if (cappedContactFactor > 1.05) hitProb += 0.006;
+    if (cappedContactFactor > 1.20) hitProb += 0.010;
+    else if (cappedContactFactor > 1.10) hitProb += 0.006;
+    else if (cappedContactFactor > 1.05) hitProb += 0.003;
     
-    // Pitcher effectiveness - softer suppression to prevent sub-2.00 ERA proliferation
-    if (pitcherHist.pitchingFactor > 1.10) hitProb -= 0.016;  // Only truly elite pitchers get large bonus
-    else if (pitcherHist.pitchingFactor > 1.06) hitProb -= 0.010;
-    else if (pitcherHist.pitchingFactor > 1.02) hitProb -= 0.005;
+    // Pitcher historical effectiveness — reduced to avoid sub-2.00 ERA outliers
+    if (pitcherHist.pitchingFactor > 1.10) hitProb -= 0.010;
+    else if (pitcherHist.pitchingFactor > 1.06) hitProb -= 0.006;
+    else if (pitcherHist.pitchingFactor > 1.02) hitProb -= 0.003;
     
     const park = parkFactors || { run: 100, hr: 100, babip: 100 };
     const runAdj = park.run / 100;
     const babipAdj = park.babip / 100;
     hitProb *= (0.7 * runAdj + 0.3 * babipAdj);
-    hitProb = Math.min(0.405, Math.max(0.165, hitProb));
+    hitProb = Math.min(0.380, Math.max(0.165, hitProb));
 
     // OUT
     if (Math.random() > hitProb) {
@@ -585,7 +635,7 @@ const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, r
         const errorProb = 0.015 - ((defRating - 50) * 0.0003);
         if (Math.random() < Math.max(0.001, errorProb)) {
              updateDefense(defenseTeam, targetPos, 'E', defensiveAlignment);
-             return { result: 'E', type: 'error', desc: 'reaches on a fielding error', outs: 0, runs: 0, rbi: 0, ev, la };
+             return { result: 'E', type: 'error', desc: 'reaches on a fielding error', outs: 0, runs: 0, rbi: 0, ev, la, hitLocation: generateHitLocation('E', isFly ? 'fly' : 'ground', pullBias) };
         }
 
         if (isFly) {
@@ -599,47 +649,47 @@ const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, r
         if (runners[0] === 1 && !isFly && runners[1] === 0 && runners[2] === 0) { 
             // GIDP rate higher for slow runners
             if (Math.random() < 0.15 - (effectiveSpeed * 0.001)) {
-                 return { result: 'GIDP', type: 'Out', desc: 'grounds into a double play', outs: 2, runs: 0, rbi: 0, ev, la };
+                 return { result: 'GIDP', type: 'Out', desc: 'grounds into a double play', outs: 2, runs: 0, rbi: 0, ev, la, hitLocation: generateHitLocation('GIDP', 'ground', pullBias) };
             }
         }
         
         // Sac Fly
         if (runners[2] === 1 && isFly && (runners.filter(r => r===1).length < 3 || Math.random() < 0.7)) {
             if (Math.random() < 0.30 + (effectiveContact * 0.001)) {
-                return { result: 'SF', type: 'Out', desc: 'hits a sacrifice fly', outs: 1, runs: 1, rbi: 1, ev, la };
+                return { result: 'SF', type: 'Out', desc: 'hits a sacrifice fly', outs: 1, runs: 1, rbi: 1, ev, la, hitLocation: generateHitLocation('SF', 'fly', pullBias) };
             }
         }
         
-        return { result: 'OUT', type: 'Out', desc: isFly ? 'flies out' : 'grounds out', outs: 1, runs: 0, rbi: 0, ev, la };
+        return { result: 'OUT', type: 'Out', desc: isFly ? 'flies out' : 'grounds out', outs: 1, runs: 0, rbi: 0, ev, la, hitLocation: generateHitLocation('OUT', isFly ? 'fly' : 'ground', pullBias) };
     }
 
     // HIT - HR probability per hit
-    // Uses exponential powerFactor scaling to properly model elite HR hitters:
-    //   Cal Raleigh (powerFactor ~1.55): ~40-45% of hits are HR (~55-60 HR season)
-    //   Aaron Judge  (powerFactor ~1.45): ~30-37% of hits are HR (~55-58 HR season)
-    //   Good power   (powerFactor ~1.20): ~11-15% of hits are HR (~18-22 HR season)
-    //   League avg   (powerFactor ~1.00):  ~4%    of hits are HR  (~5-9 HR season)
-    let hrProb = 0.040 + ((effectivePower - effectiveStuff) * 0.0024);
-    // Apply powerFactor as exponential multiplier (uncapped) — elite HR hitters get huge bonus
-    hrProb *= Math.pow(Math.max(0.65, batterHist.powerFactor), 2.8);
+    // Savant-derived power attribute (barrel%, EV, xSLG) is already more precise,
+    // so reduce reliance on historical powerFactor exponent.
+    //   Elite power (power ~90, pf ~1.45): ~22-28% of hits are HR (~35-45 HR season)
+    //   Good power  (power ~70, pf ~1.20): ~9-12% of hits are HR (~15-22 HR season)
+    //   League avg  (power ~50, pf ~1.00): ~3-4%  of hits are HR (~5-9 HR season)
+    let hrProb = 0.032 + ((effectivePower - effectiveStuff) * 0.0016);
+    // Reduced exponent (1.8 vs 2.8) — savant power already captures quality; less double-counting
+    hrProb *= Math.pow(Math.max(0.65, batterHist.powerFactor), 1.8);
     hrProb *= (park.hr / 100);
-    hrProb = Math.max(0.014, Math.min(0.56, hrProb));
+    hrProb = Math.max(0.012, Math.min(0.35, hrProb));
 
     if (Math.random() < hrProb) {
-        return { result: 'HR', type: 'Home Run', desc: 'crushes a home run!', outs: 0, runs: 1, rbi: 1, ev: 105, la: 28 };
+        return { result: 'HR', type: 'Home Run', desc: 'crushes a home run!', outs: 0, runs: 1, rbi: 1, ev: 105, la: 28, hitLocation: generateHitLocation('HR', 'hr', pullBias) };
     }
 
-    // XBH rates - doubles ~6-7% of PA for good hitters
-    let gapProb = 0.16 + (effectivePower * 0.0022) + (effectiveSpeed * 0.0012);
+    // XBH rates — doubles ~5-6% of PA for good hitters, savant power is precise
+    let gapProb = 0.14 + (effectivePower * 0.0018) + (effectiveSpeed * 0.0010);
     gapProb *= (0.8 + (park.babip / 100) * 0.2);
     if (Math.random() < gapProb) {
         if (Math.random() < 0.045 + (effectiveSpeed * 0.005)) {
-             return { result: '3B', type: 'Triple', desc: 'races for a triple', outs: 0, runs: 0, rbi: 0, ev: 98, la: 18 };
+             return { result: '3B', type: 'Triple', desc: 'races for a triple', outs: 0, runs: 0, rbi: 0, ev: 98, la: 18, hitLocation: generateHitLocation('3B', 'line', pullBias) };
         }
-        return { result: '2B', type: 'Double', desc: 'doubles into the gap', outs: 0, runs: 0, rbi: 0, ev: 100, la: 15 };
+        return { result: '2B', type: 'Double', desc: 'doubles into the gap', outs: 0, runs: 0, rbi: 0, ev: 100, la: 15, hitLocation: generateHitLocation('2B', 'line', pullBias) };
     }
 
-    return { result: '1B', type: 'Single', desc: 'singles', outs: 0, runs: 0, rbi: 0, ev: 90, la: 10 };
+    return { result: '1B', type: 'Single', desc: 'singles', outs: 0, runs: 0, rbi: 0, ev: 90, la: 10, hitLocation: generateHitLocation('1B', Math.random() < 0.6 ? 'ground' : 'line', pullBias) };
 };
 
 const getBestLineup = (team: Team): Player[] => {
@@ -905,19 +955,116 @@ const createSeededRandom = (seed: number): (() => number) => {
     };
 };
 
-const buildPitchPath = (pitchType: string, speed: number): { releasePoint: ReplayVector3; platePoint: ReplayVector3; ballPath: ReplayVector3[] } => {
+const buildPitchPath = (pitchType: string, speed: number, pitchResult?: string, pitcherControl?: number): { releasePoint: ReplayVector3; platePoint: ReplayVector3; ballPath: ReplayVector3[] } => {
     const speedNorm = Math.max(0, Math.min(1, (speed - 70) / 35));
-    const breakSide = pitchType.toLowerCase().includes('slider') || pitchType.toLowerCase().includes('curve') ? -0.35 : pitchType.toLowerCase().includes('change') ? 0.12 : -0.08;
-    const drop = pitchType.toLowerCase().includes('curve') ? -0.9 : pitchType.toLowerCase().includes('change') ? -0.5 : -0.25;
-    const releasePoint = { x: 0.5, y: 1.9, z: 54 };
-    const platePoint = { x: breakSide * (1 - speedNorm * 0.25), y: 2.4 + drop * 0.3, z: 1.4 };
+    const control = pitcherControl ?? 50;
+    const controlNorm = control / 100; // 0 = wild, 1 = elite command
+    
+    // Base pitch movement characteristics
+    const type = pitchType.toLowerCase();
+    let baseBreakX = type.includes('slider') ? -0.35 : type.includes('curve') ? -0.30 : type.includes('cutter') ? -0.20 : type.includes('change') ? 0.12 : type.includes('sinker') ? 0.10 : -0.08;
+    let baseDrop = type.includes('curve') ? -0.9 : type.includes('slider') ? -0.5 : type.includes('change') ? -0.5 : type.includes('sinker') ? -0.4 : -0.25;
+    
+    // Determine target location based on pitch result
+    // Strike zone is roughly x: [-0.83, 0.83] (17 inches / 2 scaled), y: [1.5, 3.5]
+    const ZONE_LEFT = -0.83;
+    const ZONE_RIGHT = 0.83;
+    const ZONE_BOT = 1.5;
+    const ZONE_TOP = 3.5;
+    const ZONE_MID_X = 0;
+    const ZONE_MID_Y = 2.5;
+    
+    let targetX: number;
+    let targetY: number;
+    
+    // Gaussian-ish random using Box-Muller (approximate with Math.random)
+    const gaussRand = () => {
+        const u1 = Math.random();
+        const u2 = Math.random();
+        return Math.sqrt(-2 * Math.log(u1 || 0.001)) * Math.cos(2 * Math.PI * u2);
+    };
+    
+    if (pitchResult === 'Ball' || pitchResult === 'WP') {
+        // Ball: Target outside the zone (corners, edges, off-plate)
+        const side = Math.random();
+        if (side < 0.3) {
+            // Low ball
+            targetX = ZONE_MID_X + gaussRand() * 0.5;
+            targetY = ZONE_BOT - 0.3 - Math.random() * 0.8;
+        } else if (side < 0.55) {
+            // High ball
+            targetX = ZONE_MID_X + gaussRand() * 0.4;
+            targetY = ZONE_TOP + 0.2 + Math.random() * 0.6;
+        } else if (side < 0.75) {
+            // Inside/outside off plate
+            targetX = (Math.random() < 0.5 ? -1 : 1) * (ZONE_RIGHT + 0.2 + Math.random() * 0.7);
+            targetY = ZONE_MID_Y + gaussRand() * 0.6;
+        } else {
+            // Just off a corner
+            const cornerX = Math.random() < 0.5 ? ZONE_LEFT - 0.15 : ZONE_RIGHT + 0.15;
+            const cornerY = Math.random() < 0.5 ? ZONE_BOT - 0.15 : ZONE_TOP + 0.15;
+            targetX = cornerX + gaussRand() * 0.15;
+            targetY = cornerY + gaussRand() * 0.15;
+        }
+    } else if (pitchResult === 'StrikeSwinging' || pitchResult === 'InPlay') {
+        // Swinging strike / In play: Can be anywhere in or near the zone
+        // Better control → paint corners more; worse → more center
+        const cornerBias = 0.3 + controlNorm * 0.5; // 0.3 - 0.8
+        if (Math.random() < cornerBias) {
+            // Aim for corner/edge
+            const edgeX = Math.random() < 0.5 ? ZONE_LEFT + 0.15 : ZONE_RIGHT - 0.15;
+            const edgeY = Math.random() < 0.5 ? ZONE_BOT + 0.3 : ZONE_TOP - 0.3;
+            targetX = edgeX + gaussRand() * (0.3 - controlNorm * 0.15);
+            targetY = edgeY + gaussRand() * (0.3 - controlNorm * 0.15);
+        } else {
+            // More centrally located
+            targetX = ZONE_MID_X + gaussRand() * 0.45;
+            targetY = ZONE_MID_Y + gaussRand() * 0.5;
+        }
+    } else if (pitchResult === 'StrikeLooking') {
+        // Called strike: Must be in the zone - pitchers paint edges
+        const edgeBias = 0.2 + controlNorm * 0.6;
+        if (Math.random() < edgeBias) {
+            // Edge/corner
+            targetX = (Math.random() < 0.5 ? ZONE_LEFT + 0.2 : ZONE_RIGHT - 0.2) + gaussRand() * 0.2;
+            targetY = (Math.random() < 0.5 ? ZONE_BOT + 0.25 : ZONE_TOP - 0.25) + gaussRand() * 0.2;
+        } else {
+            targetX = ZONE_MID_X + gaussRand() * 0.35;
+            targetY = ZONE_MID_Y + gaussRand() * 0.4;
+        }
+        // Keep strictly in zone
+        targetX = Math.max(ZONE_LEFT, Math.min(ZONE_RIGHT, targetX));
+        targetY = Math.max(ZONE_BOT, Math.min(ZONE_TOP, targetY));
+    } else if (pitchResult === 'Foul') {
+        // Foul: typically contact zone - anywhere in or near zone
+        targetX = ZONE_MID_X + gaussRand() * 0.55;
+        targetY = ZONE_MID_Y + gaussRand() * 0.55;
+    } else {
+        // Default / HBP: wide inside
+        targetX = (Math.random() < 0.5 ? -1.2 : 1.2) + gaussRand() * 0.2;
+        targetY = ZONE_MID_Y + gaussRand() * 0.4;
+    }
+    
+    // Apply pitch movement on top of target
+    targetX += baseBreakX * (1 - speedNorm * 0.25) * 0.3;
+    targetY += baseDrop * 0.15;
+    
+    const releasePoint = { x: 0.5 + gaussRand() * 0.08, y: 1.9 + gaussRand() * 0.05, z: 54 };
+    const platePoint = { x: targetX, y: targetY, z: 1.4 };
+    
+    // Build curved path with realistic movement
     const ballPath: ReplayVector3[] = [];
     const points = 10;
     for (let i = 0; i <= points; i++) {
         const t = i / points;
+        // Add break that develops late (quadratic curves)
+        const breakProgress = t * t; // More break as pitch approaches plate
+        const lateralBreak = baseBreakX * breakProgress * 0.3;
+        const vertBreak = baseDrop * breakProgress * 0.15;
+        
         ballPath.push({
-            x: releasePoint.x + (platePoint.x - releasePoint.x) * t,
-            y: releasePoint.y + (platePoint.y - releasePoint.y) * t,
+            x: releasePoint.x + (platePoint.x - releasePoint.x - lateralBreak) * t + lateralBreak * breakProgress,
+            y: releasePoint.y + (platePoint.y - releasePoint.y - vertBreak) * t + vertBreak * breakProgress,
             z: releasePoint.z + (platePoint.z - releasePoint.z) * t
         });
     }
@@ -1353,8 +1500,8 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
                   });
 
                   if (replayEnabled) {
-                      const trajectory = buildPitchPath(meta.type, meta.speed);
-                      replayEvents.push({
+                      const trajectory = buildPitchPath(meta.type, meta.speed, pitch, homePitcher.attributes.control);
+                      const pitchReplayEvent: any = {
                           kind: 'pitch',
                           inning: currentInning,
                           isTop: true,
@@ -1370,7 +1517,12 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
                           platePoint: trajectory.platePoint,
                           ballPath: trajectory.ballPath,
                           runners: serializeRunners(bases)
-                      });
+                      };
+                      // Attach hit location for balls in play
+                      if (pitch === 'InPlay' && abResult?.hitLocation) {
+                          pitchReplayEvent.hitLocation = abResult.hitLocation;
+                      }
+                      replayEvents.push(pitchReplayEvent);
                   }
               }
           }
@@ -1738,8 +1890,8 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
                   });
 
                   if (replayEnabled) {
-                      const trajectory = buildPitchPath(meta.type, meta.speed);
-                      replayEvents.push({
+                      const trajectory = buildPitchPath(meta.type, meta.speed, pitch, awayPitcher.attributes.control);
+                      const pitchReplayEvent: any = {
                           kind: 'pitch',
                           inning: currentInning,
                           isTop: false,
@@ -1755,7 +1907,11 @@ export const simulateGame = (home: Team, away: Team, date: Date, isPostseason = 
                           platePoint: trajectory.platePoint,
                           ballPath: trajectory.ballPath,
                           runners: serializeRunners(bases)
-                      });
+                      };
+                      if (pitch === 'InPlay' && abResult?.hitLocation) {
+                          pitchReplayEvent.hitLocation = abResult.hitLocation;
+                      }
+                      replayEvents.push(pitchReplayEvent);
                   }
                }
            }
