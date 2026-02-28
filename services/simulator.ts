@@ -62,21 +62,21 @@ const getHistoricalPerformance = (player: Player) => {
         const avgRecent = totalAvgWeighted / batWeightSum;
         const opsRecent = totalOPSWeighted / batWeightSum;
         
-        // Power factor based on HR rate - more granular tiers
-        // Cal Raleigh 2025: 60 HR in 121 G = 0.496 HR/G (elite power)
-        if (hrPerGame > 0.40) powerFactor = 1.55;       // Elite power (50+ HR pace)
-        else if (hrPerGame > 0.30) powerFactor = 1.45;  // Great power (40+ HR pace)
-        else if (hrPerGame > 0.22) powerFactor = 1.35;  // Very good power (35+ HR pace)
-        else if (hrPerGame > 0.16) powerFactor = 1.20;  // Good power (25+ HR pace)
+        // Power factor based on HR rate — reduced ceilings to prevent 70+ HR seasons
+        // Target: elite ~40-55 HR, good ~25-35 HR, average ~15-20 HR
+        if (hrPerGame > 0.40) powerFactor = 1.35;       // Elite power (50+ HR pace)
+        else if (hrPerGame > 0.30) powerFactor = 1.28;  // Great power (40+ HR pace)
+        else if (hrPerGame > 0.22) powerFactor = 1.20;  // Very good power (35+ HR pace)
+        else if (hrPerGame > 0.16) powerFactor = 1.14;  // Good power (25+ HR pace)
         else if (hrPerGame > 0.10) powerFactor = 1.08;  // Average power
-        else if (hrPerGame < 0.04) powerFactor = 0.85;  // Low power
+        else if (hrPerGame < 0.04) powerFactor = 0.88;  // Low power
         
         // Contact/OPS factor - OPS is key for players like Cal Raleigh
         // Raleigh has .220-.250 AVG but .750-.950 OPS due to power + walks
-        if (opsRecent > 0.900) contactFactor = Math.max(contactFactor, 1.30);  // Elite OPS
-        else if (opsRecent > 0.850) contactFactor = Math.max(contactFactor, 1.22);
-        else if (opsRecent > 0.800) contactFactor = Math.max(contactFactor, 1.15);
-        else if (opsRecent > 0.750) contactFactor = Math.max(contactFactor, 1.08);
+        if (opsRecent > 0.900) contactFactor = Math.max(contactFactor, 1.25);  // Elite OPS
+        else if (opsRecent > 0.850) contactFactor = Math.max(contactFactor, 1.18);
+        else if (opsRecent > 0.800) contactFactor = Math.max(contactFactor, 1.12);
+        else if (opsRecent > 0.750) contactFactor = Math.max(contactFactor, 1.06);
         else if (opsRecent > 0.700) contactFactor = Math.max(contactFactor, 1.02);
         
         // AVG-based contact (secondary to OPS)
@@ -85,36 +85,36 @@ const getHistoricalPerformance = (player: Player) => {
         else if (avgRecent > 0.250) contactFactor = Math.max(contactFactor, 1.05);
         else if (avgRecent < 0.210 && opsRecent < 0.650) contactFactor = 0.85;
         
-        // Age-based regression - stronger penalties for aging players
-        // Old players with good recent seasons should not be projected forward at full value
+        // Age-based regression - moderate penalties for aging players
+        // Prime 25-30: no penalty. Post-prime: gradual decline.
         if (player.age >= 38) {
-            powerFactor *= 0.68;
-            contactFactor *= 0.70;
+            powerFactor *= 0.72;
+            contactFactor *= 0.74;
         } else if (player.age >= 36) {
-            powerFactor *= 0.76;  // Springer-type: significantly regress
-            contactFactor *= 0.78;
+            powerFactor *= 0.80;
+            contactFactor *= 0.82;
         } else if (player.age >= 34) {
-            powerFactor *= 0.84;
-            contactFactor *= 0.86;
+            powerFactor *= 0.88;
+            contactFactor *= 0.90;
         } else if (player.age >= 32) {
-            powerFactor *= 0.91;
-            contactFactor *= 0.92;
+            powerFactor *= 0.94;
+            contactFactor *= 0.95;
         } else if (player.age >= 30) {
-            powerFactor *= 0.96;
-            contactFactor *= 0.97;
+            powerFactor *= 0.98;
+            contactFactor *= 0.98;
         }
 
         // Young player development bonus - players improving toward peak
         // Cal Raleigh at 27-28 should trend upward, not be held back by prior mediocre seasons
         if (player.age <= 24) {
-            powerFactor *= 1.09;   // Prime development years
-            contactFactor *= 1.07;
+            powerFactor *= 1.08;   // Prime development years
+            contactFactor *= 1.06;
         } else if (player.age <= 26) {
-            powerFactor *= 1.06;
-            contactFactor *= 1.04;
+            powerFactor *= 1.05;
+            contactFactor *= 1.03;
         } else if (player.age <= 28) {
-            powerFactor *= 1.03;   // Near peak, still improving
-            contactFactor *= 1.02;
+            powerFactor *= 1.02;   // Near peak, still improving
+            contactFactor *= 1.01;
         }
 
         // Detect ascending OPS trend for young/mid-prime players
@@ -133,20 +133,20 @@ const getHistoricalPerformance = (player: Player) => {
         const eraRecent = totalERASum / (totalIP || 1);
         const k9Recent = totalK9Weighted / pitchWeightSum;
         
-        // Pitching factor - lowered ceilings to prevent sub-2.00 ERA proliferation
-        // Only the truly legendary career stats warrant the highest bonus
-        if (eraRecent < 2.00) pitchingFactor = 1.12;      // Koufax/Kershaw tier
-        else if (eraRecent < 2.50) pitchingFactor = 1.08;
-        else if (eraRecent < 3.00) pitchingFactor = 1.05;
-        else if (eraRecent < 3.50) pitchingFactor = 1.02;
+        // Pitching factor - calibrated to produce realistic ERA (league avg ~4.00-4.20)
+        // HEAVILY REDUCED bonuses to avoid sub-2.00 ERA seasons
+        // Even aces with 2.00 ERA should only get small bonus — regression to mean is natural
+        if (eraRecent < 2.00) pitchingFactor = 1.04;      // Elite (0.04 bonus, was 0.08)
+        else if (eraRecent < 2.50) pitchingFactor = 1.03;
+        else if (eraRecent < 3.00) pitchingFactor = 1.02;
+        else if (eraRecent < 3.50) pitchingFactor = 1.01;
         else if (eraRecent < 4.00) pitchingFactor = 1.00;
-        else if (eraRecent < 4.50) pitchingFactor = 0.96;
-        else if (eraRecent > 5.50) pitchingFactor = 0.86;
-        else if (eraRecent > 5.00) pitchingFactor = 0.91;
+        else if (eraRecent < 4.50) pitchingFactor = 0.98;
+        else if (eraRecent > 5.50) pitchingFactor = 0.90;
+        else if (eraRecent > 5.00) pitchingFactor = 0.94;
         
-        // K/9 bonus (small)
-        if (k9Recent > 11.0) pitchingFactor += 0.03;
-        else if (k9Recent > 9.5) pitchingFactor += 0.01;
+        // K/9 bonus (very small — already captured in stuff attribute)
+        if (k9Recent > 11.0) pitchingFactor += 0.01;
     }
 
     return { powerFactor, contactFactor, pitchingFactor };
@@ -487,12 +487,14 @@ const simulatePitch = (pitcher: Player, batter: Player, currentPitches: number):
     if (Math.random() < 0.004) return 'WP';
 
     // Strike Zone Probability — higher = more strikes in zone, fewer walks
-    // MLB average ~62-64% of pitches are in-zone or swung-at
-    const strikeZoneProb = 0.46 + (effectiveControl * 0.0010);
+    // MLB average ~63-65% of pitches are in-zone or swung-at
+    // Raised slightly to reduce walk rate and lower WHIP across the board
+    const strikeZoneProb = 0.48 + (effectiveControl * 0.0012);
     
     if (Math.random() > strikeZoneProb) {
         // Outside Zone — chase probability based on compressed eye
-        const chaseProb = 0.28 - (effectiveEye * 0.003);
+        // Raised from 0.28 to 0.30 to further reduce walk rate
+        const chaseProb = 0.30 - (effectiveEye * 0.003);
         if (Math.random() < chaseProb) {
              return 'StrikeSwinging';
         }
@@ -507,13 +509,13 @@ const simulatePitch = (pitcher: Player, batter: Player, currentPitches: number):
 
     // Swing Result
     let effectiveStuff = getEffectiveAttr(pitcher.attributes.stuff || 50, fatiguePenalty * 0.8);
-    if (hist.pitchingFactor > 1.15) effectiveStuff += 3;
+    // Removed hist.pitchingFactor bonus to effectiveStuff — already captured in attribute and hitProb
 
     const effectiveContact = getEffectiveAttr(batter.attributes.contact || 50, 0);
     
     // Contact% — MLB average ~76-78%, lowered base to produce more Ks with savant spread
-    let contactProb = 0.79 + ((effectiveContact - effectiveStuff) * 0.0020);
-    contactProb = Math.max(0.55, Math.min(0.93, contactProb));
+    let contactProb = 0.78 + ((effectiveContact - effectiveStuff) * 0.0018);
+    contactProb = Math.max(0.55, Math.min(0.92, contactProb));
 
     if (Math.random() > contactProb) {
         return 'StrikeSwinging';
@@ -521,7 +523,7 @@ const simulatePitch = (pitcher: Player, batter: Player, currentPitches: number):
 
     // Foul vs InPlay — raised foul rate for longer ABs and fewer balls in play
     // More fouls = higher pitch counts, slightly fewer hit opportunities per PA
-    if (Math.random() < 0.26) return 'Foul';
+    if (Math.random() < 0.28) return 'Foul';
     return 'InPlay';
 };
 
@@ -598,26 +600,39 @@ const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, r
     }
 
     // HIT PROBABILITY TUNING — calibrated for savant-driven attributes
-    // Target: .243-.250 league AVG, .310-.320 OBP, 3.90-4.20 league ERA
-    // BABIP target ~.292-.298
-    let hitProb = 0.272 + ((effectiveContact - effectiveStuff) * 0.0020) + (fatiguePenalty * 0.008);
+    // Target: .243-.250 league AVG, .310-.320 OBP, 4.00-4.20 league ERA
+    // BABIP target ~.290-.300
+    let hitProb = 0.285 + ((effectiveContact - effectiveStuff) * 0.0015) + (fatiguePenalty * 0.007);
     
-    // Historical factors — reduced since savant contact already captures batter quality
-    const cappedContactFactor = Math.min(batterHist.contactFactor, 1.25);
-    if (cappedContactFactor > 1.20) hitProb += 0.010;
-    else if (cappedContactFactor > 1.10) hitProb += 0.006;
-    else if (cappedContactFactor > 1.05) hitProb += 0.003;
+    // Power/Exit Velocity Boost: hard-hit balls are harder to field → higher BABIP
+    // This ensures power hitters like Cal Raleigh (.231 xBA but 91+ EV) maintain realistic BA
+    // Effective power ranges ~20-99; power 70+ = hard contact player
+    if (effectivePower >= 70) hitProb += 0.012;       // Elite power → balls found holes
+    else if (effectivePower >= 60) hitProb += 0.007;   // Above-avg power
+    else if (effectivePower >= 50) hitProb += 0.003;   // Average power
+    else if (effectivePower < 35) hitProb -= 0.005;    // Weak contact = soft outs
     
-    // Pitcher historical effectiveness — reduced to avoid sub-2.00 ERA outliers
-    if (pitcherHist.pitchingFactor > 1.10) hitProb -= 0.010;
-    else if (pitcherHist.pitchingFactor > 1.06) hitProb -= 0.006;
-    else if (pitcherHist.pitchingFactor > 1.02) hitProb -= 0.003;
+    // Historical factors — minor adjustments layered on top of Savant attributes
+    const cappedContactFactor = Math.min(batterHist.contactFactor, 1.20);
+    if (cappedContactFactor > 1.15) hitProb += 0.006;
+    else if (cappedContactFactor > 1.08) hitProb += 0.003;
+    else if (cappedContactFactor > 1.03) hitProb += 0.001;
+    
+    // Pitcher historical effectiveness — CAPPED to prevent sub-2.00 ERA outliers
+    // Even the best pitchers give up hits; reduce max penalty to 0.005
+    if (pitcherHist.pitchingFactor > 1.06) hitProb -= 0.005;
+    else if (pitcherHist.pitchingFactor > 1.03) hitProb -= 0.003;
+    else if (pitcherHist.pitchingFactor > 1.01) hitProb -= 0.001;
+    
+    // Random variance: on any given at-bat, even great pitchers get unlucky
+    // This prevents deterministic outcomes that lead to unrealistic ERA clustering
+    hitProb += (Math.random() - 0.5) * 0.020;  // ±1% random noise
     
     const park = parkFactors || { run: 100, hr: 100, babip: 100 };
     const runAdj = park.run / 100;
     const babipAdj = park.babip / 100;
     hitProb *= (0.7 * runAdj + 0.3 * babipAdj);
-    hitProb = Math.min(0.380, Math.max(0.165, hitProb));
+    hitProb = Math.min(0.370, Math.max(0.175, hitProb));
 
     // OUT
     if (Math.random() > hitProb) {
@@ -664,26 +679,27 @@ const resolveBallInPlay = (pitcher: Player, batter: Player, defenseTeam: Team, r
     }
 
     // HIT - HR probability per hit
-    // Savant-derived power attribute (barrel%, EV, xSLG) is already more precise,
-    // so reduce reliance on historical powerFactor exponent.
-    //   Elite power (power ~90, pf ~1.45): ~22-28% of hits are HR (~35-45 HR season)
-    //   Good power  (power ~70, pf ~1.20): ~9-12% of hits are HR (~15-22 HR season)
-    //   League avg  (power ~50, pf ~1.00): ~3-4%  of hits are HR (~5-9 HR season)
-    let hrProb = 0.032 + ((effectivePower - effectiveStuff) * 0.0016);
-    // Reduced exponent (1.8 vs 2.8) — savant power already captures quality; less double-counting
-    hrProb *= Math.pow(Math.max(0.65, batterHist.powerFactor), 1.8);
+    // MLB-calibrated: ~13-17% of hits are HR for average hitters, up to 30%+ for elite
+    // Savant-derived power attribute (barrel%, EV, xSLG) drives this calculation
+    //   Elite power (power ~90, pf ~1.40): ~25-32% of hits are HR (~40-50 HR season)
+    //   Good power  (power ~70, pf ~1.22): ~16-20% of hits are HR (~25-35 HR season)
+    //   League avg  (power ~50, pf ~1.00): ~10-13% of hits are HR (~12-18 HR season)
+    let hrProb = 0.10 + ((effectivePower - effectiveStuff) * 0.0016);
+    // No exponent — powerFactor already calibrated, exponent caused runaway compounding
+    // Cap powerFactor at 1.50 to prevent young-breakout edge cases from hitting 70+ HR
+    hrProb *= Math.min(1.50, Math.max(0.70, batterHist.powerFactor));
     hrProb *= (park.hr / 100);
-    hrProb = Math.max(0.012, Math.min(0.35, hrProb));
+    hrProb = Math.max(0.03, Math.min(0.28, hrProb));
 
     if (Math.random() < hrProb) {
         return { result: 'HR', type: 'Home Run', desc: 'crushes a home run!', outs: 0, runs: 1, rbi: 1, ev: 105, la: 28, hitLocation: generateHitLocation('HR', 'hr', pullBias) };
     }
 
     // XBH rates — doubles ~5-6% of PA for good hitters, savant power is precise
-    let gapProb = 0.14 + (effectivePower * 0.0018) + (effectiveSpeed * 0.0010);
+    let gapProb = 0.13 + (effectivePower * 0.0015) + (effectiveSpeed * 0.0008);
     gapProb *= (0.8 + (park.babip / 100) * 0.2);
     if (Math.random() < gapProb) {
-        if (Math.random() < 0.045 + (effectiveSpeed * 0.005)) {
+        if (Math.random() < 0.04 + (effectiveSpeed * 0.004)) {
              return { result: '3B', type: 'Triple', desc: 'races for a triple', outs: 0, runs: 0, rbi: 0, ev: 98, la: 18, hitLocation: generateHitLocation('3B', 'line', pullBias) };
         }
         return { result: '2B', type: 'Double', desc: 'doubles into the gap', outs: 0, runs: 0, rbi: 0, ev: 100, la: 15, hitLocation: generateHitLocation('2B', 'line', pullBias) };

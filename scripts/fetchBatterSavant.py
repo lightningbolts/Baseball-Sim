@@ -28,6 +28,8 @@ try:
         statcast_batter_expected_stats,
         statcast_batter_exitvelo_barrels,
         statcast_sprint_speed,
+        batting_stats,
+        chadwick_register,
         playerid_reverse_lookup,
     )
     import pandas as pd
@@ -81,15 +83,12 @@ def fetch_expected_stats(year: int, min_pa: int = MIN_PA) -> dict:
 
             result[player_id] = {
                 'pa': safe_int(row.get('pa', 0)),
-                'xwoba': safe_float(row.get('est_woba', row.get('xwoba', 0))),
-                'xba': safe_float(row.get('est_ba', row.get('xba', 0))),
-                'xslg': safe_float(row.get('est_slg', row.get('xslg', 0))),
+                'xwoba': safe_float(row.get('est_woba', 0)),
+                'xba': safe_float(row.get('est_ba', 0)),
+                'xslg': safe_float(row.get('est_slg', 0)),
                 'woba': safe_float(row.get('woba', 0)),
-                'ba': safe_float(row.get('ba', row.get('avg', 0))),
+                'ba': safe_float(row.get('ba', 0)),
                 'slg': safe_float(row.get('slg', 0)),
-                'brl_percent': safe_float(row.get('brl_percent', 0)),
-                'k_percent': safe_float(row.get('k_percent', 0)),
-                'bb_percent': safe_float(row.get('bb_percent', 0)),
             }
 
         print(f"    Got expected stats for {len(result)} batters")
@@ -149,7 +148,7 @@ def fetch_sprint_speeds(year: int) -> dict:
                 continue
 
             result[player_id] = {
-                'sprint_speed': safe_float(row.get('hp_to_1b', row.get('sprint_speed', 0))),
+                'sprint_speed': safe_float(row.get('sprint_speed', 0)),
             }
 
         print(f"    Got sprint speed for {len(result)} batters")
@@ -191,10 +190,59 @@ def lookup_player_names(player_ids: set) -> dict:
     return names
 
 
+def build_fg_to_mlbam_map():
+    """Build a FanGraphs ID -> MLBAM ID mapping using the Chadwick register."""
+    print("Building FanGraphs -> MLBAM ID map...")
+    try:
+        reg = chadwick_register()
+        mapped = reg.dropna(subset=['key_mlbam', 'key_fangraphs'])
+        fg_to_mlbam = {}
+        for _, row in mapped.iterrows():
+            fg_id = int(row['key_fangraphs'])
+            mlbam_id = int(row['key_mlbam'])
+            if fg_id > 0 and mlbam_id > 0:
+                fg_to_mlbam[fg_id] = mlbam_id
+        print(f"  Mapped {len(fg_to_mlbam)} FanGraphs IDs to MLBAM IDs")
+        return fg_to_mlbam
+    except Exception as e:
+        print(f"  Error building ID map: {e}")
+        return {}
+
+
+def fetch_fangraphs_batting(year, fg_to_mlbam):
+    """Fetch K%, BB%, O-Swing% (chase), SwStr% (whiff) from FanGraphs batting stats."""
+    print(f"  Fetching FanGraphs batting stats for {year}...")
+    try:
+        df = batting_stats(year, qual=1)
+        if df is None or df.empty:
+            return {}
+        result = {}
+        for _, row in df.iterrows():
+            fg_id = safe_int(row.get('IDfg', 0))
+            mlbam_id = fg_to_mlbam.get(fg_id, 0)
+            if mlbam_id == 0:
+                continue
+            result[mlbam_id] = {
+                'k_pct': round(safe_float(row.get('K%', 0)) * 100, 1),
+                'bb_pct': round(safe_float(row.get('BB%', 0)) * 100, 1),
+                # O-Swing% = chase rate (swings on pitches outside zone)
+                'chase_pct': round(safe_float(row.get('O-Swing%', 0)) * 100, 1),
+                # SwStr% = swinging strike rate (whiff rate)
+                'whiff_pct': round(safe_float(row.get('SwStr%', 0)) * 100, 1),
+            }
+        print(f"    Got {len(result)} batters (mapped from FanGraphs)")
+        return result
+    except Exception as e:
+        print(f"    Error: {e}")
+        return {}
+
+
 def main():
     print("=" * 60)
     print("Fetching MLB Batter Savant Data (2022-2025)")
     print("=" * 60)
+
+    fg_to_mlbam = build_fg_to_mlbam_map()
 
     all_player_ids = set()
     yearly_data = {}
@@ -205,18 +253,20 @@ def main():
         expected = fetch_expected_stats(year, MIN_PA)
         exit_velo = fetch_exit_velo_barrels(year, MIN_PA)
         sprint = fetch_sprint_speeds(year)
+        fg_stats = fetch_fangraphs_batting(year, fg_to_mlbam)
 
         # Merge all data sources for this year
         merged = {}
-        all_ids_this_year = set(expected.keys()) | set(exit_velo.keys())
+        all_ids_this_year = set(expected.keys()) | set(exit_velo.keys()) | set(fg_stats.keys())
 
         for pid in all_ids_this_year:
             exp = expected.get(pid, {})
             ev = exit_velo.get(pid, {})
             sp = sprint.get(pid, {})
+            fg = fg_stats.get(pid, {})
 
             merged[pid] = {
-                # Expected stats
+                # Expected stats (from Savant)
                 'xwoba': exp.get('xwoba', 0),
                 'xba': exp.get('xba', 0),
                 'xslg': exp.get('xslg', 0),
@@ -224,11 +274,14 @@ def main():
                 'ba': exp.get('ba', 0),
                 'slg': exp.get('slg', 0),
                 'pa': exp.get('pa', 0),
-                'k_pct': exp.get('k_percent', 0),
-                'bb_pct': exp.get('bb_percent', 0),
-                'brl_pct_exp': exp.get('brl_percent', 0),
 
-                # Exit velo / barrels
+                # K%, BB%, chase%, whiff% from FanGraphs
+                'k_pct': fg.get('k_pct', 0),
+                'bb_pct': fg.get('bb_pct', 0),
+                'chase_pct': fg.get('chase_pct', 0),
+                'whiff_pct': fg.get('whiff_pct', 0),
+
+                # Exit velo / barrels (from Savant)
                 'avg_exit_velo': ev.get('avg_exit_velo', 0),
                 'max_exit_velo': ev.get('max_exit_velo', 0),
                 'barrel_pct': ev.get('barrel_pct', 0),
@@ -236,7 +289,7 @@ def main():
                 'la_sweet_spot_pct': ev.get('la_sweet_spot_pct', 0),
                 'avg_launch_angle': ev.get('avg_launch_angle', 0),
 
-                # Sprint speed
+                # Sprint speed (from Savant - ft/s)
                 'sprint_speed': sp.get('sprint_speed', 0),
             }
 
@@ -296,6 +349,20 @@ def main():
         json.dump(output_data, f, indent=2)
 
     print(f"\nSaved to: {output_path}")
+
+    # Verify data quality
+    print("\nData quality check:")
+    zero_fields = {'k_pct': 0, 'bb_pct': 0, 'chase_pct': 0, 'whiff_pct': 0, 'sprint_speed': 0, 'barrel_pct': 0, 'avg_exit_velo': 0}
+    total = len(batters)
+    for pid_str, b in batters.items():
+        cs = b['currentStats']
+        if cs:
+            for field in zero_fields:
+                if cs.get(field, 0) == 0:
+                    zero_fields[field] += 1
+    for field, count in zero_fields.items():
+        pct = round(count / total * 100, 1) if total > 0 else 0
+        print(f"  {field}: {count}/{total} still zero ({pct}%)")
 
     # Print samples
     print("\nSample entries:")

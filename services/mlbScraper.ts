@@ -1,11 +1,14 @@
 
-import { Player, Position, StaffMember, PlayerRatings, PlayerHistoryEntry, StatsCounters, DefensiveStats, PitchRepertoireEntry, SavantBatterStats } from "../types";
+import { Player, Position, StaffMember, PlayerRatings, PlayerHistoryEntry, StatsCounters, DefensiveStats, PitchRepertoireEntry, SavantBatterStats, SavantPitchingStats } from "../types";
 
 // Import real pitch arsenal data fetched from Baseball Savant via pybaseball
 import pitchArsenalData from './pitchArsenals.json';
 
 // Import real batter savant data fetched from Baseball Savant via pybaseball
 import batterSavantData from './batterSavant.json';
+
+// Import real pitcher savant data fetched from Baseball Savant via pybaseball
+import pitcherSavantData from './pitcherSavant.json';
 
 const BASE_URL = "https://statsapi.mlb.com/api/v1";
 
@@ -44,6 +47,24 @@ interface BatterSavantCache {
 }
 
 const realBatterSavant: BatterSavantCache = batterSavantData as unknown as BatterSavantCache;
+
+// Type the imported pitcher savant data
+interface PitcherSavantEntry {
+    name: string;
+    mlbId: number;
+    currentStats: SavantPitchingStats | null;
+    statsHistory: Record<string, SavantPitchingStats>;
+}
+
+interface PitcherSavantCache {
+    lastUpdated: string;
+    source: string;
+    years: number[];
+    pitcherCount: number;
+    pitchers: Record<string, PitcherSavantEntry>;
+}
+
+const realPitcherSavant: PitcherSavantCache = pitcherSavantData as unknown as PitcherSavantCache;
 
 const mapPosition = (posData: any): Position => {
     if (
@@ -343,27 +364,27 @@ const determineStarterRole = (
 export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
     console.group(`[MLB Scraper] Fetching Real-Time Roster for Team ID: ${teamMlbId}`);
     try {
-        // Fetch MULTIPLE roster types to get complete team depth
-        // fullRoster gets 40-man, depthChart gets active, allTime gets additional players
-        const [rosterRes, depthRes, fullRosterRes] = await Promise.all([
-            fetch(`${BASE_URL}/teams/${teamMlbId}/roster?rosterType=active`),
-            fetch(`${BASE_URL}/teams/${teamMlbId}/roster/depthChart`),
-            fetch(`${BASE_URL}/teams/${teamMlbId}/roster?rosterType=fullRoster`)
+        // OPTIMIZED: Single hydrated API call replaces N+1 per-player requests
+        // This fetches roster + person details + all hitting/pitching/fielding stats in ONE call
+        const hydrateUrl = `${BASE_URL}/teams/${teamMlbId}/roster?rosterType=fullRoster&hydrate=person(stats(type=[yearByYear,career],group=[hitting,pitching,fielding],gameType=R))`;
+        const activeRosterUrl = `${BASE_URL}/teams/${teamMlbId}/roster?rosterType=active`;
+        
+        const [hydrateRes, activeRes] = await Promise.all([
+            fetch(hydrateUrl),
+            fetch(activeRosterUrl)
         ]);
         
-        if (!rosterRes.ok && !depthRes.ok && !fullRosterRes.ok) throw new Error("Failed to fetch roster");
+        if (!hydrateRes.ok && !activeRes.ok) throw new Error("Failed to fetch roster");
         
-        const [rosterData, depthData, fullRosterData] = await Promise.all([
-            rosterRes.ok ? rosterRes.json() : { roster: [] },
-            depthRes.ok ? depthRes.json() : { roster: [] },
-            fullRosterRes.ok ? fullRosterRes.json() : { roster: [] }
+        const [hydrateData, activeData] = await Promise.all([
+            hydrateRes.ok ? hydrateRes.json() : { roster: [] },
+            activeRes.ok ? activeRes.json() : { roster: [] }
         ]);
         
-        // Combine all roster sources
+        // Combine rosters, dedup by person ID
         const combinedRoster = [
-            ...(fullRosterData.roster || []),
-            ...(rosterData.roster || []),
-            ...(depthData.roster || [])
+            ...(hydrateData.roster || []),
+            ...(activeData.roster || [])
         ];
         
         const seenIds = new Set<number>();
@@ -374,31 +395,47 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
             return true;
         });
 
-        console.log(`Processing ${uniquePlayersList.length} unique players from combined roster sources...`);
+        console.log(`Processing ${uniquePlayersList.length} unique players (hydrated, minimal API calls)...`);
 
+        // Process players - NO additional per-player API calls needed for players 
+        // with hydrated data. Only fetch pitch arsenal for pitchersWithout static data.
         const playerPromises = uniquePlayersList.map(async (p: any) => {
             const personId = p.person.id;
             const assumedRole: 'starter' | 'reliever' = (p.position?.abbreviation === 'SP') ? 'starter' : 'reliever';
             
-            // Fetch hitting, pitching, AND fielding - specify Regular Season only to avoid inflated stats
-            const statsUrl = `${BASE_URL}/people/${personId}/stats?stats=yearByYear&group=hitting,pitching,fielding&gameType=R`;
-            const careerFieldingUrl = `${BASE_URL}/people/${personId}/stats?stats=career&group=fielding&gameType=R`;
-            const personUrl = `${BASE_URL}/people/${personId}`;
+            const person = p.person;
+            if (!person) return null;
 
             try {
-                const [statsRes, personRes, arsenalRaw, careerFieldingRes] = await Promise.all([
-                    fetch(statsUrl),
-                    fetch(personUrl),
-                    fetchPitchArsenal(personId),
-                    fetch(careerFieldingUrl)
-                ]);
-
-                const statsData = await statsRes.json();
-                const personData = await personRes.json();
-                const careerFieldingData = await careerFieldingRes.json();
-                const person = personData.people[0];
+                // Extract stats from hydrated person data (already included in the response)
+                const allStats = person.stats || [];
                 
-                if (!person) return null;
+                // Only fetch pitch arsenal if NOT in static Baseball Savant data AND is a pitcher
+                const isPitcher = p.position?.type === 'Pitcher' || 
+                    ['P', 'SP', 'RP', 'CL', 'RHP', 'LHP'].includes(p.position?.abbreviation || '');
+                const hasStaticArsenal = realArsenals.pitchers[String(personId)]?.currentArsenal?.length > 0;
+                
+                let arsenalRaw: PitchRepertoireEntry[] = [];
+                if (isPitcher && !hasStaticArsenal) {
+                    arsenalRaw = await fetchPitchArsenal(personId);
+                }
+                
+                // Extract career fielding from hydrated career stats
+                let careerFielding: any = { po: 0, a: 0, e: 0, dp: 0, rf9: 0, chances: 0, fpct: 0 };
+                const careerFieldingGroup = allStats.find((g: any) => g.type?.displayName === 'career' && g.group?.displayName === 'fielding');
+                if (careerFieldingGroup?.splits?.length > 0) {
+                    const stat = careerFieldingGroup.splits[0].stat;
+                    const chances = stat.chances || (stat.putOuts || 0) + (stat.assists || 0) + (stat.errors || 0) || 1;
+                    careerFielding = {
+                        po: stat.putOuts || 0,
+                        a: stat.assists || 0,
+                        e: stat.errors || 0,
+                        dp: stat.doublePlays || 0,
+                        rf9: parseFloat(stat.rangeFactorPer9Inn || stat.rangeFactorPer9 || 0),
+                        chances: chances,
+                        fpct: parseFloat(stat.fielding) || (((stat.putOuts || 0) + (stat.assists || 0)) / chances)
+                    };
+                }
 
                 // --- PITCH REPERTOIRE: Use real Baseball Savant data first, then MLB API, then fallback ---
                 let arsenal: PitchRepertoireEntry[] = [];
@@ -423,7 +460,6 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                     console.log(`[${personId}] Using fallback arsenal: ${arsenal.length} pitches`);
                 }
 
-                const allStats = statsData.stats || [];
                 const historyMap = new Map<string, PlayerHistoryEntry>();
                 
                 // Pre-populate history with arsenal data from Baseball Savant
@@ -435,6 +471,12 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                         pitchArsenal: arsenalHistory[year]
                     });
                 }
+                
+                let s25: any = null;
+                let s24: any = null;
+                let isTwoWay = false;
+                
+                // Detection for Ohtani or similar two-way usage
 
                 const upsertHistory = (entry: PlayerHistoryEntry, groupName: string, weight: number) => {
                     const key = `${entry.year}`;
@@ -475,27 +517,6 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                         existing.stats = { games: existingStats.games || entryStats.games || 0, ...existingStats, ...entryStats };
                     }
                 };
-                
-                // Parse career fielding from separate request
-                let careerFielding: any = { po: 0, a: 0, e: 0, dp: 0, rf9: 0, chances: 0, fpct: 0 };
-                const careerFieldingStats = careerFieldingData.stats || [];
-                if (careerFieldingStats.length > 0 && careerFieldingStats[0].splits && careerFieldingStats[0].splits.length > 0) {
-                    const stat = careerFieldingStats[0].splits[0].stat;
-                    const chances = stat.chances || (stat.putOuts || 0) + (stat.assists || 0) + (stat.errors || 0) || 1;
-                    careerFielding = {
-                        po: stat.putOuts || 0,
-                        a: stat.assists || 0,
-                        e: stat.errors || 0,
-                        dp: stat.doublePlays || 0,
-                        rf9: parseFloat(stat.rangeFactorPer9Inn || stat.rangeFactorPer9 || 0),
-                        chances: chances,
-                        fpct: parseFloat(stat.fielding) || (((stat.putOuts || 0) + (stat.assists || 0)) / chances)
-                    };
-                }
-                
-                let s25: any = null;
-                let s24: any = null;
-                let isTwoWay = false;
                 
                 // Detection for Ohtani or similar two-way usage
                 // Check if they have stats for BOTH hitting and pitching in the same recent year
@@ -693,6 +714,66 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                         attributes.stuff = calcRating(k9, 5.0, 12.0);
                         attributes.control = calcRating(5.0 - bb9, 1.0, 4.0);
                         
+                        // Enhance pitcher ratings with Savant data if available
+                        // Use WEIGHTED BLEND across years (not just current) for injury resilience
+                        const pitcherSavantEntry = realPitcherSavant.pitchers[String(personId)];
+                        let pitcherSavant: SavantPitchingStats | null = null;
+                        
+                        if (pitcherSavantEntry) {
+                            const hist = pitcherSavantEntry.statsHistory || {};
+                            const current = pitcherSavantEntry.currentStats;
+                            const years = Object.keys(hist).sort((a, b) => parseInt(b) - parseInt(a));
+                            
+                            if (years.length >= 2) {
+                                // Weighted blend: most recent year 50%, prior year 35%, 2 years ago 15%
+                                // This prevents injured/bad years from tanking a player's projection
+                                const weights = [0.50, 0.35, 0.15];
+                                const blended: any = {};
+                                const numericFields: (keyof SavantPitchingStats)[] = [
+                                    'xera', 'xba', 'whiff_pct', 'chase_pct', 'k_pct', 'bb_pct',
+                                    'barrel_pct', 'hard_hit_pct', 'gb_pct', 'avg_exit_velo_against',
+                                    'pitching_run_value', 'fastball_run_value', 'breaking_run_value', 'offspeed_run_value'
+                                ];
+                                
+                                for (const field of numericFields) {
+                                    let weightedSum = 0;
+                                    let weightSum = 0;
+                                    for (let i = 0; i < Math.min(years.length, 3); i++) {
+                                        const val = hist[years[i]]?.[field] || 0;
+                                        if (val !== 0) { // Only count non-zero values
+                                            weightedSum += val * weights[i];
+                                            weightSum += weights[i];
+                                        }
+                                    }
+                                    blended[field] = weightSum > 0 ? weightedSum / weightSum : 0;
+                                }
+                                // Keep non-blended fields from current
+                                blended.fastball_velo = current?.fastball_velo || 0;
+                                blended.extension = current?.extension || 0;
+                                pitcherSavant = blended as SavantPitchingStats;
+                            } else {
+                                pitcherSavant = current || null;
+                            }
+                        }
+                        
+                        if (pitcherSavant) {
+                            // Whiff% strongly correlates with stuff quality (MLB avg ~25%)
+                            if (pitcherSavant.whiff_pct > 0) {
+                                const whiffBonus = Math.round((pitcherSavant.whiff_pct - 25) * 0.5);
+                                attributes.stuff = Math.max(30, Math.min(99, attributes.stuff + whiffBonus));
+                            }
+                            // Chase% indicates pitch deception (MLB avg ~28%)
+                            if (pitcherSavant.chase_pct > 0) {
+                                const chaseBonus = Math.round((pitcherSavant.chase_pct - 28) * 0.4);
+                                attributes.stuff = Math.max(30, Math.min(99, attributes.stuff + chaseBonus));
+                            }
+                            // Low barrel% = tough to square up (MLB avg ~7%)
+                            if (pitcherSavant.barrel_pct > 0) {
+                                const barrelBonus = Math.round((7 - pitcherSavant.barrel_pct) * 1.5);
+                                attributes.control = Math.max(30, Math.min(99, attributes.control + barrelBonus));
+                            }
+                        }
+                        
                         // Get ACTUAL velocity from pitch arsenal if available
                         const arsenalHasFastball = arsenal && arsenal.length > 0;
                         const fastballVelo = arsenalHasFastball ? arsenal.find((p: PitchRepertoireEntry) => 
@@ -712,7 +793,13 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                         
                         attributes.spin = calcRating(k9 + (10-bb9), 12, 20);
 
-                        let pOverall = calcRating(5.00 - era, 2.80, 5.20); 
+                        // Overall: blend MLB ERA with Savant xERA for better injury-year handling
+                        // If xERA is available, average them; xERA is more stable / predictive
+                        let effectiveEra = era;
+                        if (pitcherSavant && pitcherSavant.xera > 0) {
+                            effectiveEra = era * 0.40 + pitcherSavant.xera * 0.60;
+                        }
+                        let pOverall = calcRating(5.00 - effectiveEra, 2.80, 5.20); 
                         if (pOverall < 40) pOverall = 40;
                         if (position === Position.P) overall = pOverall;
 
@@ -751,8 +838,38 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                     let savantHistory: Record<string, SavantBatterStats> = {};
                     
                     if (realBatterData) {
-                        savantCurrent = realBatterData.currentStats || null;
                         savantHistory = realBatterData.statsHistory || {};
+                        const years = Object.keys(savantHistory).sort((a, b) => parseInt(b) - parseInt(a));
+                        
+                        if (years.length >= 2) {
+                            // Weighted blend across years for stability & bounceback detection
+                            // Most recent 50%, prior 35%, 2 years ago 15%
+                            const weights = [0.50, 0.35, 0.15];
+                            const blended: any = {};
+                            const numericFields: (keyof SavantBatterStats)[] = [
+                                'xwoba', 'xba', 'xslg', 'woba', 'ba', 'slg',
+                                'k_pct', 'bb_pct', 'chase_pct', 'whiff_pct',
+                                'avg_exit_velo', 'max_exit_velo', 'barrel_pct',
+                                'hard_hit_pct', 'la_sweet_spot_pct', 'avg_launch_angle', 'sprint_speed'
+                            ];
+                            
+                            for (const field of numericFields) {
+                                let weightedSum = 0;
+                                let weightSum = 0;
+                                for (let i = 0; i < Math.min(years.length, 3); i++) {
+                                    const val = savantHistory[years[i]]?.[field] || 0;
+                                    if (val !== 0) {
+                                        weightedSum += val * weights[i];
+                                        weightSum += weights[i];
+                                    }
+                                }
+                                blended[field] = weightSum > 0 ? weightedSum / weightSum : 0;
+                            }
+                            blended.pa = realBatterData.currentStats?.pa || 0;
+                            savantCurrent = blended as SavantBatterStats;
+                        } else {
+                            savantCurrent = realBatterData.currentStats || null;
+                        }
                         console.log(`[${personId}] ${realBatterData.name}: Using Savant batter data (xwOBA: ${savantCurrent?.xwoba}, xBA: ${savantCurrent?.xba})`);
                     }
 
@@ -770,9 +887,9 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                         const sprintSpeed = savantCurrent.sprint_speed || 0;
                         const laSweetSpot = savantCurrent.la_sweet_spot_pct || 0;
                         
-                        // Contact: Based on xBA (ability to make contact and get hits)
-                        // xBA range: elite .300+, avg .250, poor .200
-                        attributes.contact = calcRating(xba, 0.200, 0.300);
+                        // Contact: Based on xBA — wider scale so low-xBA power hitters aren't punished too harshly
+                        // xBA range: elite .300+, avg .250, poor .180 (was .200, raised floor)
+                        attributes.contact = calcRating(xba, 0.180, 0.300);
                         
                         // Power: Weighted combo of barrel%, exit velo, xSLG
                         // Barrel% range: elite 15%+, avg 6-7%, poor <3%
@@ -880,6 +997,11 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                 const playerSavantBatting = realBatterEntry?.currentStats || undefined;
                 const playerSavantBattingHistory = realBatterEntry?.statsHistory || undefined;
 
+                // Prepare Savant pitcher data for the player object
+                const realPitcherEntry = realPitcherSavant.pitchers[String(personId)];
+                const playerSavantPitching = realPitcherEntry?.currentStats || undefined;
+                const playerSavantPitchingHistory = realPitcherEntry?.statsHistory || undefined;
+
                 const player: Player = {
                     id: `mlb_${personId}`,
                     name: person.fullName,
@@ -899,6 +1021,8 @@ export const fetchRealRoster = async (teamMlbId: number): Promise<Player[]> => {
                     statsCounters: statsCounters,
                     savantBatting: playerSavantBatting,
                     savantBattingHistory: playerSavantBattingHistory,
+                    savantPitching: playerSavantPitching,
+                    savantPitchingHistory: playerSavantPitchingHistory,
                     // Init empty stats
                     batting: { 
                         avg:0, obp:0, slg:0, ops:0, hr:0, rbi:0, sb:0, wrc_plus:100, war:0, 

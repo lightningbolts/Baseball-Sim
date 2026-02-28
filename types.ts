@@ -58,6 +58,8 @@ export interface SavantBatterStats {
   pa: number;
   k_pct: number;
   bb_pct: number;
+  chase_pct: number;
+  whiff_pct: number;
   avg_exit_velo: number;
   max_exit_velo: number;
   barrel_pct: number;
@@ -65,6 +67,26 @@ export interface SavantBatterStats {
   la_sweet_spot_pct: number;
   avg_launch_angle: number;
   sprint_speed: number;
+}
+
+/** Baseball Savant pitcher metrics fetched via pybaseball */
+export interface SavantPitchingStats {
+  xera: number;
+  xba: number;
+  fastball_velo: number;
+  avg_exit_velo_against: number;
+  chase_pct: number;
+  whiff_pct: number;
+  k_pct: number;
+  bb_pct: number;
+  barrel_pct: number;
+  hard_hit_pct: number;
+  gb_pct: number;
+  extension: number;
+  pitching_run_value: number;
+  fastball_run_value: number;
+  breaking_run_value: number;
+  offspeed_run_value: number;
 }
 
 export interface DefensiveStats {
@@ -302,6 +324,8 @@ export interface Player {
   defense?: DefensiveStats;
   savantBatting?: SavantBatterStats;
   savantBattingHistory?: Record<string, SavantBatterStats>;
+  savantPitching?: SavantPitchingStats;
+  savantPitchingHistory?: Record<string, SavantPitchingStats>;
   statsCounters: StatsCounters;
   trait?: string;
   injury: Injury;
